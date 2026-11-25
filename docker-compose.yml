@@ -1,0 +1,184 @@
+name: ecommerce-starter
+
+# Общие переменные окружения для всех процессов Medusa (init и medusa).
+# Каждый контейнер получает только необходимые ему переменные.
+x-medusa-env: &medusa-env
+  NODE_ENV: ${NODE_ENV:-development}
+  DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:?POSTGRES_HOST не задан в .env}/${POSTGRES_DB}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL не задан в .env}
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET не задан в .env}
+  COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET не задан в .env}
+  STORE_CORS: ${STORE_CORS:?STORE_CORS не задан в .env}
+  ADMIN_CORS: ${ADMIN_CORS:?ADMIN_CORS не задан в .env}
+  AUTH_CORS: ${AUTH_CORS:?AUTH_CORS не задан в .env}
+  STORE_NAME: ${STORE_NAME:?STORE_NAME не задан в .env}
+  STORE_CURRENCY: ${STORE_CURRENCY:?STORE_CURRENCY не задан в .env}
+  STORE_LOCALE: ${STORE_LOCALE:?STORE_LOCALE не задан в .env}
+
+services:
+  # ── Инфраструктура ────────────────────────────────────────────────
+  # PostgreSQL, Redis и Meilisearch не публикуются наружу (нет `ports`)
+  # и доступны только внутри Docker-сети проекта.
+
+  postgres:
+    image: postgres:17.12-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB не задан в .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER не задан в .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан в .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - ecommerce
+
+  redis:
+    image: redis:8.8.4-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - ecommerce
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.58.0
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:?MEILISEARCH_MASTER_KEY не задан в .env}
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: development
+    volumes:
+      - meili_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:7700/health | grep -q available"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - ecommerce
+
+  # ── Одноразовая инициализация ─────────────────────────────────────
+  # Запускается перед Medusa: валидация окружения, миграции, seed,
+  # создание администратора и publishable API key. Полностью идемпотентен.
+
+  init:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    environment:
+      <<: *medusa-env
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL не задан в .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD не задан в .env}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+    volumes:
+      # Корень репозитория нужен для записи publishable API key в .env
+      # и для запуска скриптов из infrastructure/scripts/.
+      - .:/server
+      # Анонимные тома сохраняют node_modules образа при bind-mount.
+      - /server/node_modules
+      - /server/backend/node_modules
+    command: ["sh", "/server/infrastructure/scripts/init.sh", "full"]
+    networks:
+      - ecommerce
+
+  # ── Приложения ────────────────────────────────────────────────────
+
+  medusa:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    environment:
+      <<: *medusa-env
+      PORT: ${MEDUSA_PORT:-9000}
+      NUXT_PUBLIC_SITE_URL: ${NUXT_PUBLIC_SITE_URL:-http://localhost:3000}
+    ports:
+      - "${MEDUSA_PORT:-9000}:${MEDUSA_PORT:-9000}"
+      # Dev-сервер Medusa Admin (HMR) в режиме `medusa develop`.
+      - "5173:5173"
+    volumes:
+      - ./backend:/server/backend
+      - /server/backend/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${MEDUSA_PORT:-9000}/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+    command: ["pnpm", "run", "dev"]
+    networks:
+      - ecommerce
+
+  storefront:
+    build:
+      context: .
+      dockerfile: storefront/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      medusa:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # Внутренний адрес Medusa — только для серверной стороны (SSR).
+      NUXT_MEDUSA_URL: ${MEDUSA_INTERNAL_URL:?MEDUSA_INTERNAL_URL не задан в .env}
+      # Публичный адрес Medusa — для запросов из браузера (Commerce Client).
+      # Публичен по определению (тот же адрес, что в документации и curl).
+      NUXT_PUBLIC_MEDUSA_URL: ${MEDUSA_PUBLIC_URL:-http://localhost:9000}
+      # Publishable API key публичен по определению (это не секрет).
+      NUXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: ${MEDUSA_PUBLISHABLE_KEY}
+      # Таймаут запросов Commerce Client к Medusa (мс).
+      NUXT_PUBLIC_MEDUSA_TIMEOUT_MS: ${NUXT_PUBLIC_MEDUSA_TIMEOUT_MS:-15000}
+      NUXT_PUBLIC_SITE_URL: ${NUXT_PUBLIC_SITE_URL:-http://localhost:3000}
+      NUXT_PUBLIC_STORE_NAME: ${STORE_NAME}
+      NUXT_PUBLIC_STORE_LOCALE: ${STORE_LOCALE}
+      NUXT_PUBLIC_STORE_CURRENCY: ${STORE_CURRENCY}
+    ports:
+      - "${NUXT_PORT:-3000}:${NUXT_PORT:-3000}"
+    volumes:
+      - ./storefront:/server/storefront
+      - /server/storefront/node_modules
+      - /server/storefront/.nuxt
+      - /server/storefront/.output
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${NUXT_PORT:-3000}/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    command: ["pnpm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "${NUXT_PORT:-3000}"]
+    networks:
+      - ecommerce
+
+volumes:
+  postgres_data:
+  meili_data:
+
+networks:
+  ecommerce:
+    driver: bridge

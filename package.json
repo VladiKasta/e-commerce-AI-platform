@@ -1,0 +1,16 @@
+{
+  "name": "ecommerce-starter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Универсальный eCommerce Starter Kit: Medusa v2 + Nuxt 4 + PostgreSQL + Redis + Meilisearch",
+  "packageManager": "pnpm@12.23.0",
+  "engines": {
+    "node": ">=22.23.4"
+  },
+  "scripts": {
+    "dev": "pnpm -r dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

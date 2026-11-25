@@ -1,0 +1,104 @@
+# Архитектура проекта
+
+## Общая схема
+
+```text
+┌──────────────────────────── Хост-машина ────────────────────────────┐
+│                                                                      │
+│  Браузер ──► http://localhost:3000 (Nuxt SSR)                        │
+│  Браузер ──► http://localhost:9000 (Medusa API + Admin)               │
+│                                                                      │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ только опубликованные порты 3000, 9000, 5173
+┌──────────────────────────────▼───────────────────────────────────────┐
+│                     Docker-сеть ecommerce-starter_ecommerce          │
+│                                                                      │
+│  ┌──────────┐   ┌─────────┐   ┌──────────────┐   ┌──────────────┐    │
+│  │ storefront│──►│  medusa │──►│   postgres   │   │ meilisearch  │    │
+│  │  (Nuxt)  │   │ (Medusa)│──►│    redis     │   │  (этап 3)    │    │
+│  └──────────┘   └────┬────┘   └──────────────┘   └──────────────┘    │
+│                        ▲                                            │
+│                 ┌──────┴──────┐                                     │
+│                 │    init     │  одноразовый: миграции, seed,       │
+│                 │ (одноразовый)│  администратор, publishable key    │
+│                 └─────────────┘                                     │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+## Ответственность каждого сервиса
+
+| Сервис | Ответственность |
+|---|---|
+| **postgres** | Единственное хранилище состояния: товары, заказы, клиенты, настройки Medusa. Создает базу и пользователя автоматически при первом старте (механизм официального образа). Не публикуется наружу. |
+| **redis** | Сессии Medusa (`redisUrl`), кэш (модуль `cache-redis`), шина событий (`event-bus-redis`) и движок workflows (`workflow-engine-redis`). Данные Redis эphemeral: не критичны и восстанавливаются при рестарте. Не публикуется наружу. |
+| **meilisearch** | Поисковая инфраструктура. На этапе 1 только запущен с master key и persistent volume; индексация товаров появится на этапе 3. Не публикуется наружу. |
+| **init** | Одноразовый процесс инициализации: валидация окружения → миграции (`medusa db:migrate`) → идемпотентный seed → создание администратора. Пишет publishable API key в корневой `.env`. Завершается кодом 0; medusa стартует только после его успешного завершения (`depends_on: service_completed_successfully`). |
+| **medusa** | Коммерческий бэкенд: Store API (`/store/*`), Admin API (`/admin/*`), auth (`/auth/*`), health (`/health`) и Medusa Admin (`/app`). Работает в dev-режиме `medusa develop` (hot reload, admin dev-сервер на 5173). |
+| **storefront** | SSR-витрина Nuxt с типизированным Commerce Client (`@medusajs/js-sdk`). Серверная сторона (SSR) обращается к Medusa по внутреннему адресу `http://medusa:9000`; после hydration браузер запрашивает публичный URL Medusa напрямую (CORS Store API разрешен). Nitro-маршруты — только `/api/health`. |
+
+## Взаимодействие Nuxt и Medusa
+
+1. **Браузер** запрашивает страницу у Nuxt (`http://localhost:3000`).
+2. **SSR (Nitro + Vue на сервере)** рендерит страницу. Данные каталога запрашивает типизированный **Commerce Client** (`useCommerce()` → фасад над официальным `@medusajs/js-sdk`):
+   - адресация к Medusa по внутренней Docker-сети: `runtimeConfig.medusaUrl` (`NUXT_MEDUSA_URL=http://medusa:9000`);
+   - publishable API key добавляется SDK ко всем запросам автоматически;
+   - данные (товары, категории, регионы) попадают в Nuxt payload — после hydration повторных запросов нет.
+3. **После hydration** клиентская навигация (пагинация каталога, смена региона) выполняет запросы из браузера **напрямую к публичному URL Medusa** (`runtimeConfig.public.medusaUrl` ← `MEDUSA_PUBLIC_URL`): CORS Store API уже разрешен (`STORE_CORS`), publishable API key публичен по определению.
+4. **Nuxt Server API (Nitro)** используется только там, где нужны серверные секреты, cookies или валидация: на этапе 2 это единственный маршрут `/api/health` (health check Docker + статус Medusa). Proxy-маршрут `/api/products` этапа 1 удален — его роль выполняет `useCommerce().products.list()`.
+
+Такая схема выбрана как самая простая (KISS): серверные секреты не попадают в браузер, витрина не дублирует маршруты Medusa собственными proxy, а единственный источник коммерческой логики — Medusa. Детали — в [docs/commerce-client.md](commerce-client.md).
+
+**Разделение приватной и публичной конфигурации** реализовано через `runtimeConfig` Nuxt:
+
+- `runtimeConfig.medusaUrl` — приватная часть (только сервер), значение из `NUXT_MEDUSA_URL`;
+- `runtimeConfig.public.{medusaUrl, medusaPublishableKey, medusaTimeoutMs, siteUrl, storeName, storeLocale, storeCurrency}` — публичная часть, значения из `NUXT_PUBLIC_*`.
+
+Publishable API key и публичный URL Medusa — исключения из правила «секретов в браузере нет»: оба публичны по определению (идентификатор канала продаж и публичный адрес API).
+
+**Типизированный Commerce Client (этап 2):**
+
+```text
+Vue Components / Pages → Composables (useCommerce, useStore)
+    → Commerce Client (shared/utils/commerce-client.ts, фасад над @medusajs/js-sdk)
+    → Medusa Store API
+```
+
+- Инстанс клиента кэшируется на `nuxtApp`: один на запрос на сервере (нет утечек между пользователями), один на приложение в браузере.
+- Ошибки нормализуются в единый `CommerceError` (сеть/таймаут/HTTP/особенности Medusa).
+- Региональный контекст (`useStore`) и рассчитанные цены (`region_id` + авто-`fields=+*variants.calculated_price`) инкапсулированы в клиенте и `useStore`.
+
+## Назначение PostgreSQL, Redis и Meilisearch
+
+- **PostgreSQL** — источник истины. Все коммерческие данные создаются только через штатные workflows Medusa (никакой прямой записи в таблицы). Persistent volume `postgres_data` переживает перезапуски.
+- **Redis** — транзитное состояние: сессии, кэш, события, оркестрация workflows. Medusa настроена на три штатных Redis-модуля (см. `backend/medusa-config.ts`) — окружение разработки максимально близко к production-конфигурации Medusa. Volume не используется намеренно: потеря этих данных при рестарте не критична.
+- **Meilisearch** — подготовленная поисковая инфраструктура. Master key задается через корневой `.env`, данные хранятся в persistent volume `meili_data`. Medusa к нему на этапе 1 не подключена — интеграция появится на этапе 3.
+
+## Принцип управления конфигурацией
+
+1. **Единый корневой `.env`** — единственное место хранения credentials и параметров. В `.gitignore`; в репозитории только шаблон `.env.example` с комментариями.
+2. **Генерация при первой установке**: `infrastructure/scripts/generate-secrets.sh` создает отсутствующие секреты (`openssl rand`). Повторные запуски никогда не перезаписывают существующие значения.
+3. **Валидация перед запуском**: `infrastructure/scripts/validate-env.mjs` проверяет обязательность, форматы URL, длины секретов. Запускается на хосте (если есть Node) и всегда — внутри init-контейнера перед миграциями.
+4. **Каждому контейнеру — только его переменные.** Compose подставляет значения из `.env` в `environment` конкретных сервисов: medusa не получает `ADMIN_PASSWORD`, storefront не получает `JWT_SECRET`/`COOKIE_SECRET` и т.п. (см. `docker-compose.yml`, секция `x-medusa-env`).
+5. **Docker Compose нативно валидирует критичные переменные** синтаксисом `${VAR:?сообщение об ошибке}` — запуск с пустым `.env` завершается понятной ошибкой до старта контейнеров.
+6. **Publishable API key передается storefront'у** через `.env` (переменная `MEDUSA_PUBLISHABLE_KEY`), куда его записывает seed-скрипт Medusa.
+
+## Принятые архитектурные решения
+
+| Решение | Обоснование |
+|---|---|
+| **Monorepo pnpm workspace** (`backend/`, `storefront/`) | Один корневой `.env`, один lockfile, общие команды `pnpm -r`. Отсутствие лишних инструментов сборки (turbo) — KISS для двух пакетов. |
+| **Dev-режим Docker Compose** (`medusa develop`, `nuxt dev`, bind-mount исходников) | Официально рекомендованный Medusa способ Docker-разработки: hot reload backend и storefront, предсказуемая среда без установки БД на хост. Production-сборка вынесена на этап 10 (YAGNI). |
+| **Идемпотентный seed вместо «one-shot»** | `make init` безопасно запускать повторно: нет дубликатов, нет потери данных, seed «дозалечивает» конфигурацию (например, активирует категории). Все данные создаются штатными workflows Medusa. |
+| **Init как отдельный compose-сервис** с `service_completed_successfully` | Контролируемая одноразовая инициализация, порядок запуска гарантирован Docker'ом, а не задержками. Простой `docker compose up` самодостаточен: на свежем volume выполнит миграции и seed до старта Medusa. |
+| **Health checks для всех сервисов**, readiness через `--wait` и опрос в `status.sh` | Никаких фиксированных задержек: готовность определяется реальными проверками (pg_isready, redis-cli ping, /health). |
+| **Prices в основных единицах** | Medusa ≥ 2.20 хранит суммы в major units (1490 = 1490 ₽), что подтверждено официальным линт-правилом `prices-in-major-units`. Витрина форматирует суммы через `Intl.NumberFormat`. |
+| **Минимальный типизированный слой витрины** (`shared/types/medusa.ts`) на этапе 1 | Заменен на этапе 2 типизированным Commerce Client поверх официального `@medusajs/js-sdk` (см. [docs/commerce-client.md](commerce-client.md)); в `shared/types/medusa.ts` остались только типы ответов серверных маршрутов Nuxt. |
+| **Браузер обращается к Medusa напрямую** (после hydration) | Стандартная схема storefront Medusa: SSR — внутренняя сеть, браузер — публичный URL с CORS. Исключает дублирование маршрутов Medusa собственными proxy. Publishable key и публичный URL не являются секретами. |
+| **Анонимные тома `node_modules` + `--renew-anon-volumes`** | pnpm-workspace в bind-mount требует маскировки `node_modules`; флаг гарантирует, что после пересборки образа контейнеры используют актуальные зависимости. |
+| **Redis-модули Medusa включены сразу** | Это штатная production-конфигурация Medusa (кэш/события/workflows в Redis), не требует кода и делает dev-среду репрезентативной. |
+| **PostgreSQL/Redis/Meilisearch без опубликованных портов** | Требование безопасности: доступ только внутри Docker-сети; проверка извне — через `docker compose exec` (`make status`). |
+
+## Известные компромиссы
+
+- Bind-mount исходников означает, что образы содержат копию кода, которая всегда перекрывается монтированием. Плюс: образ самодостаточен. Минус: пересборка после изменения lockfile — учтено в `make build` / `--renew-anon-volumes`.
+- Русскоязычные демо-данные и `pnpm`-специфичные `allowBuilds` в `pnpm-workspace.yaml` привязаны к актуальным версиям инструментов; при их обновлении файлы нужно обновлять.

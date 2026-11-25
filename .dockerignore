@@ -1,0 +1,32 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Environment (never bake secrets into images)
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+backend/.medusa
+storefront/.nuxt
+storefront/.output
+storefront/.data
+**/dist
+**/build
+
+# VCS and docs not needed in image context
+.git
+.gitignore
+docs
+*.md
+!README.md
+
+# Misc
+.DS_Store
+*.log
+.tsbuildinfo
+tsconfig.tsbuildinfo
+.vscode
+.idea
+coverage

@@ -1,0 +1,27 @@
+packages:
+  - backend
+  - storefront
+
+# pnpm 12 (supply-chain guard): разрешаем install-скрипты только
+# проверенным зависимостям с нативными компонентами.
+allowBuilds:
+  "@medusajs/telemetry": true
+  "@swc/core": true
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: true
+
+# pnpm 12: свежевышедшие пакеты разрешены явно.
+minimumReleaseAgeExclude:
+  - "@nuxt/kit@4.7.0"
+  - "@nuxt/nitro-server@4.7.0"
+  - "@nuxt/nitro-v3-server@4.7.0"
+  - "@nuxt/schema@4.7.0"
+  - "@nuxt/vite-builder@4.7.0"
+  - "@nuxt/vite-server@4.7.0"
+  - nitropack@2.14.0
+  - nuxt@4.7.0
+  - "@types/react@19.3.1"
+  - "@vitest/mocker@5.1.2"
+  - "@vitest/spy@5.1.2"
+  - vitest@5.1.2
