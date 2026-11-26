@@ -11,7 +11,7 @@ SHELL := /bin/bash
 
 SCRIPTS := infrastructure/scripts
 
-.PHONY: help init up down dev build logs status migrate seed lint typecheck test
+.PHONY: help init up down dev build logs status migrate seed lint typecheck test search-init search-reindex search-status search-logs
 
 help: ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -59,11 +59,41 @@ status: ## Проверить доступность всех сервисов
 # ── Обслуживание данных ──────────────────────────────────────────────────────
 # Все команды идемпотентны и безопасны: данные и volumes не удаляются.
 
-migrate: ## Применить миграции Medusa
+migrate: ## Применить миграции Medusa (включая поисковые индексы)
 	@docker compose run --rm init sh /server/infrastructure/scripts/init.sh migrate
 
 seed: ## Запустить seed-скрипт (магазин, регион, канал, ключ, демо-товары)
 	@docker compose run --rm init sh /server/infrastructure/scripts/init.sh seed
+
+# ── Поиск (Meilisearch) ─────────────────────────────────────────────────────
+# Команды работают с включенным стеком (make up). Все операции идемпотентны:
+# данные каталога не удаляются, повторный запуск безопасен.
+
+search-init: ## Инициализация поиска: индексы, настройки, первоначальная индексация
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-init.ts"
+
+search-reindex: ## Полная переиндексация каталога (атомарная замена версии индекса)
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-reindex.ts"
+
+search-status: ## Статус поиска: здоровье, индексы, счетчики, проверка API
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-status.ts"
+
+search-logs: ## Логи Meilisearch (Ctrl+C для выхода)
+	@docker compose logs -f --tail=100 meilisearch
+
+# ── Поиск (Meilisearch) ─────────────────────────────────────────────────────
+
+search-init: ## Инициализация поиска: индексы, настройки, первоначальная индексация
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-init.ts"
+
+search-reindex: ## Полная переиндексация каталога (атомарная замена версии индекса)
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-reindex.ts"
+
+search-status: ## Статус поиска: здоровье, индексы, счетчики, проверка API
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-status.ts"
+
+search-logs: ## Логи Meilisearch (Ctrl+C для выхода)
+	@docker compose logs -f --tail=100 meilisearch
 
 # ── Проверки качества ────────────────────────────────────────────────────────
 # Запускаются внутри Docker — Node.js и pnpm на хосте не требуются.

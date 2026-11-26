@@ -1,5 +1,6 @@
 import path from "node:path"
 import type { ExecArgs } from "@medusajs/framework/types"
+import type { IProductModuleService } from "@medusajs/framework/types"
 import {
   ContainerRegistrationKeys,
   Modules,
@@ -147,8 +148,7 @@ const DEMO_PRODUCTS: DemoProduct[] = [
       "https://medusa-public-images.s3.eu-west-1.amazonaws.com/tee-black-back.png",
     ],
     variants: buildTshirtVariants(),
-  },
-  {
+  },  {
     title: "Футболка «Кракен»",
     handle: "futbolka-kraken",
     description:
@@ -225,19 +225,217 @@ const DEMO_PRODUCTS: DemoProduct[] = [
     categoryHandle: "accessories",
     variants: [buildOneSizeVariant("BOTTLE-750", PRICE_BOTTLE)],
   },
+  {
+    // Демонстрирует пересекающиеся значения характеристик (бренд и цвет
+    // совпадают с футболкой «Медуза») и ручную характеристику цвета для
+    // товара без штатной опции «Цвет».
+    title: "Сумка-шоппер «Эко»",
+    handle: "sumka-shopper-eko",
+    description:
+      "Эко-шоппер из органического хлопка с принтом «Медуза». Выдерживает до 15 кг.",
+    categoryHandle: "accessories",
+    variants: [buildOneSizeVariant("SHOPPER-EKO-OS", 1890)],
+  },
+  {
+    // Второй товар с вариантом без наличия: Чёрный/S в наличии,
+    // Чёрный/M — нет (пересечение с критическим сценарием).
+    title: "Лонгслив «Медуза»",
+    handle: "longsliv-meduza",
+    description:
+      "Лонгслив с длинным рукавом из органического хлопка. Принт «Медуза», свободный крой.",
+    categoryHandle: "t-shirts",
+    variants: [
+      {
+        title: "S / Чёрный",
+        sku: "LONG-MED-S-BLK",
+        options: { "Размер": "S", "Цвет": "Чёрный" },
+        price: 1990,
+      },
+      {
+        title: "M / Чёрный",
+        sku: "LONG-MED-M-BLK",
+        options: { "Размер": "M", "Цвет": "Чёрный" },
+        price: 2190,
+      },
+    ],
+  },
 ]
 
 /**
  * Остатки демо-товаров по SKU. null — не создавать запись об остатке вовсе.
  * По умолчанию товары получают 10 единиц на складе.
+ *
+ * TEE-MED-M-BLK — КРИТИЧЕСКИЙ СЦЕНАРИЙ фасетной фильтрации (этап 3):
+ * у футболки «Медуза» вариант Чёрный/M отсутствует, а Чёрный/S и Белый/M —
+ * в наличии. Фильтр (цвет=Чёрный И размер=M И в наличии) НЕ должен находить
+ * этот товар: комбинация существует только у отсутствующего варианта.
  */
 const INVENTORY_OVERRIDES: Record<string, number | null> = {
   "MUG-MEDUSA": 0,
   "BOTTLE-750": null,
   "STICKER-PACK": 100,
+  "TEE-MED-M-BLK": 0,
+  "LONG-MED-M-BLK": 0,
 }
 
 const DEFAULT_STOCKED_QUANTITY = 10
+
+// ── Демонстрационные характеристики (этап 3) ──────────────────────────────
+//
+// Универсальные характеристики каталога: тип данных и способ отображения
+// фильтра независимы. Цвет и размер получают значения из штатных опций
+// Medusa (option_title), остальные назначаются товарам вручную.
+
+type DemoAttribute = {
+  code: string
+  name: string
+  data_type: "text" | "number" | "boolean" | "select" | "multi_select"
+  filter_type: "checkbox" | "select" | "radio" | "range" | "color" | "boolean"
+  unit?: string
+  searchable?: boolean
+  position: number
+  option_title?: string
+  options?: Array<{ value: string; label: string }>
+}
+
+const DEMO_ATTRIBUTES: DemoAttribute[] = [
+  {
+    code: "brand",
+    name: "Бренд",
+    data_type: "select",
+    filter_type: "checkbox",
+    position: 1,
+    options: [
+      { value: "medusa-originals", label: "Medusa Originals" },
+      { value: "deep-sea", label: "Deep Sea" },
+      { value: "north-polar", label: "North Polar" },
+      { value: "urban-basic", label: "Urban Basic" },
+    ],
+  },
+  {
+    code: "color",
+    name: "Цвет",
+    data_type: "select",
+    filter_type: "color",
+    position: 2,
+    // Значения выводятся из штатной опции товара «Цвет».
+    option_title: "Цвет",
+    options: [
+      { value: "Чёрный", label: "Чёрный" },
+      { value: "Белый", label: "Белый" },
+    ],
+  },
+  {
+    code: "size",
+    name: "Размер",
+    data_type: "select",
+    filter_type: "checkbox",
+    position: 3,
+    option_title: "Размер",
+    options: ["S", "M", "L", "XL", "OS"].map((value) => ({ value, label: value })),
+  },
+  {
+    code: "material",
+    name: "Материал",
+    data_type: "multi_select",
+    filter_type: "checkbox",
+    position: 4,
+    options: [
+      { value: "cotton", label: "Хлопок" },
+      { value: "organic-cotton", label: "Органический хлопок" },
+      { value: "polyester", label: "Полиэстер" },
+      { value: "ceramics", label: "Керамика" },
+      { value: "steel", label: "Нержавеющая сталь" },
+    ],
+  },
+  {
+    code: "rating",
+    name: "Рейтинг",
+    data_type: "number",
+    filter_type: "range",
+    position: 5,
+  },
+  {
+    code: "eco",
+    name: "Эко-линейка",
+    data_type: "boolean",
+    filter_type: "boolean",
+    position: 6,
+  },
+]
+
+/** Наборы характеристик по категориям: определяют состав фильтров каталога. */
+const DEMO_CATEGORY_ATTRIBUTES: Record<string, string[]> = {
+  "t-shirts": ["brand", "color", "size", "material", "rating", "eco"],
+  hoodies: ["brand", "color", "size", "material", "eco"],
+  accessories: ["brand", "color", "material", "rating", "eco"],
+}
+
+/**
+ * Значения характеристик по товарам (handle → атрибут → значение/значения).
+ * Цвет для товаров со штатной опцией «Цвет» НЕ назначается вручную —
+ * индексатор выводит его из опции варианта.
+ */
+const DEMO_PRODUCT_ATTRIBUTES: Record<string, Record<string, string | number | boolean | string[]>> = {
+  "futbolka-meduza": {
+    brand: "medusa-originals",
+    material: ["cotton"],
+    rating: 4.6,
+    eco: true,
+  },
+  "futbolka-kraken": { brand: "deep-sea", material: ["polyester"], rating: 4.1, eco: false },
+  "futbolka-prostaya": { brand: "urban-basic", material: ["cotton"], rating: 4.3, eco: false },
+  "hudi-meduza": {
+    brand: "medusa-originals",
+    material: ["cotton", "polyester"],
+    rating: 4.8,
+    eco: true,
+  },
+  "svitshot-atlantika": { brand: "deep-sea", material: ["polyester"], rating: 4.2, eco: false },
+  "hudi-polyarnoe": {
+    brand: "north-polar",
+    material: ["polyester", "cotton"],
+    rating: 4.7,
+    eco: true,
+  },
+  "sumka-shopper": { brand: "urban-basic", material: ["cotton"], rating: 4.0, eco: false },
+  "kruzhka-meduza": { brand: "medusa-originals", material: ["ceramics"], rating: 4.9, eco: true },
+  "stikerpak-more": { brand: "deep-sea", material: ["polyester"], rating: 3.9, eco: false },
+  "butylka-dlya-vody": { brand: "north-polar", material: ["steel"], rating: 4.4, eco: true },
+  // Цвет назначается вручную: у шоппера нет штатной опции «Цвет».
+  "sumka-shopper-eko": {
+    brand: "urban-basic",
+    color: "Чёрный",
+    material: ["organic-cotton"],
+    rating: 4.2,
+    eco: true,
+  },
+  "longsliv-meduza": {
+    brand: "medusa-originals",
+    material: ["organic-cotton"],
+    rating: 4.5,
+    eco: true,
+  },
+}
+
+/** Коллекции демо-каталога. */
+const DEMO_COLLECTIONS = [
+  { handle: "medusy", name: "Медузы" },
+  { handle: "eko", name: "Эко-линейка" },
+]
+
+const COLLECTION_MEMBERS: Record<string, string[]> = {
+  medusy: ["futbolka-meduza", "hudi-meduza", "kruzhka-meduza", "longsliv-meduza"],
+  eko: [
+    "futbolka-meduza",
+    "hudi-meduza",
+    "hudi-polyarnoe",
+    "kruzhka-meduza",
+    "butylka-dlya-vody",
+    "longsliv-meduza",
+    "sumka-shopper-eko",
+  ],
+}
 
 /**
  * Синхронизирует publishable API key с корневым .env, чтобы storefront
@@ -753,5 +951,248 @@ export default async function seedStore({ container }: ExecArgs) {
     logger.info("Остатки уже настроены — пропускаю")
   }
 
+  // Демонстрационные товары с нулевым остатком (критический сценарий
+  // фасетной фильтрации) приводятся к целевому состоянию и на повторных
+  // запусках: seed «дозалечивает» конфигурацию (см. этап 1).
+  const criticalSkus = Object.entries(INVENTORY_OVERRIDES)
+    .filter(([, quantity]) => quantity === 0)
+    .map(([sku]) => sku)
+
+  const criticalUpdates: {
+    inventory_item_id: string
+    location_id: string
+    stocked_quantity: number
+  }[] = []
+  for (const item of inventoryItems) {
+    if (!item.sku || !criticalSkus.includes(item.sku)) {
+      continue
+    }
+    for (const level of existingLevels) {
+      if (level.inventory_item_id === item.id && level.stocked_quantity !== 0) {
+        criticalUpdates.push({
+          inventory_item_id: item.id,
+          location_id: level.location_id,
+          stocked_quantity: 0,
+        })
+      }
+    }
+  }
+
+  if (criticalUpdates.length) {
+    await inventoryService.updateInventoryLevels(criticalUpdates)
+    logger.info(
+      `Обнулены остатки критических вариантов: ${criticalUpdates.length} (демонстрация фильтрации по наличию)`
+    )
+  }
+
+  await seedCatalogAttributes({ container, logger, productService, categoryByHandle })
+
   logger.info("Seed завершен.")
+}
+
+/**
+ * Идемпотентный seed демонстрационных характеристик, их значений и коллекций
+ * (этап 3). Все операции проверяют существование данных перед созданием.
+ */
+async function seedCatalogAttributes({
+  container,
+  logger,
+  productService,
+  categoryByHandle,
+}: {
+  container: Parameters<typeof seedStore>[0]["container"]
+  logger: { info: (message: string) => void; warn: (message: string) => void }
+  productService: IProductModuleService
+  categoryByHandle: Map<string, { id: string; handle: string }>
+}): Promise<void> {
+  const attributeService = container.resolve("catalog_attributes")
+  const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const { updateProductsWorkflow } = await import("@medusajs/medusa/core-flows")
+
+  type AttributeRow = { id: string; code: string }
+  type OptionRow = { attribute_id: string; value: string }
+  type ProductRow = {
+    id: string
+    handle: string
+    collection_id?: string | null
+    variants: Array<{ id: string; sku: string | null }>
+  }
+
+  logger.info("Seeding catalog attributes...")
+  const existingAttributes = (await attributeService.listAttributes()) as AttributeRow[]
+  const attributeByCode = new Map(existingAttributes.map((row) => [row.code, row]))
+
+  const missingAttributes = DEMO_ATTRIBUTES.filter(
+    (attribute) => !attributeByCode.has(attribute.code)
+  )
+
+  if (missingAttributes.length) {
+    await attributeService.createAttributes(
+      missingAttributes.map((attribute) => ({
+        code: attribute.code,
+        name: attribute.name,
+        data_type: attribute.data_type,
+        filter_type: attribute.filter_type,
+        unit: attribute.unit ?? null,
+        filterable: true,
+        searchable: attribute.searchable ?? true,
+        position: attribute.position,
+        option_title: attribute.option_title ?? null,
+      }))
+    )
+    for (const created of (await attributeService.listAttributes()) as AttributeRow[]) {
+      attributeByCode.set(created.code, created)
+    }
+  }
+
+  logger.info("Seeding attribute options...")
+  const existingOptions = (await attributeService.listAttributeOptions()) as OptionRow[]
+  const optionKey = (attributeId: string, value: string): string => `${attributeId}__${value}`
+  const existingOptionKeys = new Set(
+    existingOptions.map((row) => optionKey(row.attribute_id, row.value))
+  )
+
+  const optionsToCreate = DEMO_ATTRIBUTES.flatMap((attribute) => {
+    const attributeRow = attributeByCode.get(attribute.code)
+    if (!attributeRow || !attribute.options?.length) {
+      return []
+    }
+    return attribute.options
+      .filter((option) => !existingOptionKeys.has(optionKey(attributeRow.id, option.value)))
+      .map((option, index) => ({
+        attribute_id: attributeRow.id,
+        value: option.value,
+        label: option.label,
+        position: index + 1,
+      }))
+  })
+
+  if (optionsToCreate.length) {
+    await attributeService.createAttributeOptions(optionsToCreate)
+  }
+
+  logger.info("Seeding category attribute bindings...")
+  const existingBindings = (await attributeService.listCategoryAttributes()) as Array<{
+    category_id: string
+    attribute_id: string
+  }>
+  const bindingKey = (categoryId: string, attributeId: string): string => `${categoryId}__${attributeId}`
+  const existingBindingKeys = new Set(
+    existingBindings.map((row) => bindingKey(row.category_id, row.attribute_id))
+  )
+
+  const bindingsToCreate: Array<{
+    category_id: string
+    attribute_id: string
+    position: number
+  }> = []
+  for (const [categoryHandle, codes] of Object.entries(DEMO_CATEGORY_ATTRIBUTES)) {
+    const category = categoryByHandle.get(categoryHandle)
+    if (!category) {
+      continue
+    }
+    codes.forEach((code, index) => {
+      const attribute = attributeByCode.get(code)
+      if (!attribute || existingBindingKeys.has(bindingKey(category.id, attribute.id))) {
+        return
+      }
+      bindingsToCreate.push({
+        category_id: category.id,
+        attribute_id: attribute.id,
+        position: index + 1,
+      })
+    })
+  }
+
+  if (bindingsToCreate.length) {
+    await attributeService.createCategoryAttributes(bindingsToCreate)
+  }
+
+  logger.info("Seeding product attribute values...")
+  const { data } = await query.graph({
+    entity: "product",
+    fields: ["id", "handle", "collection_id", "variants.id", "variants.sku"],
+  })
+  const products = data as unknown as ProductRow[]
+  const productByHandle = new Map(products.map((row) => [row.handle, row]))
+
+  const valuePayloads: Array<{
+    product_id: string
+    variant_id?: string | null
+    attribute_id: string
+    value: string | number | boolean
+  }> = []
+
+  for (const [handle, values] of Object.entries(DEMO_PRODUCT_ATTRIBUTES)) {
+    const product = productByHandle.get(handle)
+    if (!product) {
+      continue
+    }
+    for (const [code, rawValue] of Object.entries(values)) {
+      const attribute = attributeByCode.get(code)
+      if (!attribute) {
+        continue
+      }
+      const singleValues = Array.isArray(rawValue) ? rawValue : [rawValue]
+      for (const value of singleValues) {
+        valuePayloads.push({
+          product_id: product.id,
+          attribute_id: attribute.id,
+          value,
+        })
+      }
+    }
+  }
+
+  if (valuePayloads.length) {
+    await attributeService.setProductAttributeValues(valuePayloads)
+    logger.info(`Назначено значений характеристик: ${valuePayloads.length}`)
+  }
+
+  logger.info("Seeding collections...")
+  const existingCollections = await productService.listProductCollections()
+  const collectionByHandle = new Map(
+    existingCollections.map((row) => [row.handle ?? "", row])
+  )
+
+  const missingCollections = DEMO_COLLECTIONS.filter(
+    (collection) => !collectionByHandle.has(collection.handle)
+  )
+
+  if (missingCollections.length) {
+    await productService.createProductCollections(
+      missingCollections.map((collection) => ({
+        handle: collection.handle,
+        title: collection.name,
+      }))
+    )
+    for (const created of await productService.listProductCollections()) {
+      collectionByHandle.set(created.handle ?? "", created)
+    }
+  }
+
+  logger.info("Linking products to collections...")
+  for (const [collectionHandle, handles] of Object.entries(COLLECTION_MEMBERS)) {
+    const collection = collectionByHandle.get(collectionHandle)
+    if (!collection) {
+      continue
+    }
+
+    const productsToLink = handles
+      .map((handle) => productByHandle.get(handle))
+      .filter((product): product is ProductRow => Boolean(product))
+      .filter((product) => product.collection_id !== collection.id)
+
+    if (productsToLink.length) {
+      await updateProductsWorkflow(container).run({
+        input: {
+          products: productsToLink.map((product) => ({
+            id: product.id,
+            collection_id: collection.id,
+          })),
+        },
+      })
+      logger.info(`Коллекция «${collectionHandle}»: добавлено товаров ${productsToLink.length}`)
+    }
+  }
 }

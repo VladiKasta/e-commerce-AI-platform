@@ -65,5 +65,35 @@ module.exports = defineConfig({
         },
       },
     },
+    // Универсальные характеристики товаров (бренды, материалы, технические
+    // параметры) — этап 3. См. backend/src/modules/catalog-attributes.
+    {
+      resolve: "./src/modules/catalog-attributes",
+    },
+    // Официальный Search Module Medusa с провайдером Meilisearch:
+    // индексация, синхронизация и версионирование индексов — штатные
+    // механизмы модуля; провайдер транслирует запросы к Meilisearch.
+    // См. docs/search.md и docs/indexing.md.
+    {
+      resolve: "@medusajs/medusa/search",
+      options: {
+        providers: [
+          {
+            resolve: "./src/modules/search-meilisearch/providers/meilisearch",
+            id: "meilisearch",
+            options: {
+              host: process.env.MEILISEARCH_HOST,
+              master_key: process.env.MEILISEARCH_MASTER_KEY,
+              request_timeout_ms: 15_000,
+            },
+          },
+        ],
+        default_provider: "meilisearch",
+        index_prefix: process.env.MEILISEARCH_INDEX_PREFIX || "store",
+        reindex: {
+          batch_size: 100,
+        },
+      },
+    },
   ],
 })

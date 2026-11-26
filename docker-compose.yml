@@ -14,6 +14,15 @@ x-medusa-env: &medusa-env
   STORE_NAME: ${STORE_NAME:?STORE_NAME не задан в .env}
   STORE_CURRENCY: ${STORE_CURRENCY:?STORE_CURRENCY не задан в .env}
   STORE_LOCALE: ${STORE_LOCALE:?STORE_LOCALE не задан в .env}
+  # Поисковая инфраструктура (этап 3): backend создает поисковые индексы
+  # и синхронизирует их с Medusa. Master key не публикуется наружу и
+  # используется только внутри backend-контейнеров для провижининга
+  # API-ключей с минимальными правами.
+  MEILISEARCH_HOST: ${MEILISEARCH_HOST:?MEILISEARCH_HOST не задан в .env}
+  MEILISEARCH_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:?MEILISEARCH_MASTER_KEY не задан в .env}
+  MEILISEARCH_INDEX_PREFIX: ${MEILISEARCH_INDEX_PREFIX:-store}
+  MEILISEARCH_SYNONYMS: ${MEILISEARCH_SYNONYMS:-}
+  MEILISEARCH_STOP_WORDS: ${MEILISEARCH_STOP_WORDS:-}
 
 services:
   # ── Инфраструктура ────────────────────────────────────────────────

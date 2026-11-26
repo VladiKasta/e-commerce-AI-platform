@@ -31,6 +31,10 @@
 - [Коллекции](#коллекции)
   - [Список коллекций](#6-список-коллекций)
   - [Коллекция по ID](#7-коллекция-по-id)
+- [Каталог и поиск (Meilisearch, этап 3)](#каталог-и-поиск-meilisearch-этап-3)
+  - [12. Каталог с фасетами](#12-каталог-с-фасетами)
+  - [13. Полнотекстовый поиск](#13-полнотекстовый-поиск)
+  - [14. Поисковые подсказки](#14-поисковые-подсказки)
 - [Регионы](#регионы)
   - [Список регионов](#8-список-регионов)
   - [Регион по ID](#9-регион-по-id)
@@ -522,6 +526,135 @@ curl "http://localhost:9000/store/collections/pcol_nonexistent" \
 HTTP 404
 {"type":"not_found","message":"Collection with id: pcol_nonexistent was not found"}
 ```
+
+---
+
+## Каталог и поиск (Meilisearch, этап 3)
+
+Поисковые маршруты каталога поверх Meilisearch через официальный Search Module Medusa (структура индекса, региональные цены и вариант-ориентированная фильтрация — см. [docs/search.md](search.md) по мере готовности; модель индекса — [docs/ARCHITECTURE.md](ARCHITECTURE.md)).
+
+Контракт ответа един для каталога и поиска: `{products, pagination, facets, sortOptions}`. TypeScript-контракты — `backend/src/types/catalog.ts`. Этап 3 в разработке: Admin API характеристик, тесты и полная документация добавляются по ходу этапа.
+
+Ключевые свойства (проверено на живых данных 26.11.2026):
+
+- Счетчики фасетов — **точное число уникальных товаров** (не вариантов): фасет `brand` на всем каталоге суммируется ровно в `pagination.total`.
+- Фильтрация **вариант-ориентированная**: значения, определенные покупаемым вариантом (цвет/размер из штатных опций Medusa), фильтруются по одному варианту. Пример (критический сценарий): у футболки «Медуза» вариант Чёрный/M отсутствует, а Чёрный/S и Белый/M — в наличии; фильтр `color=Чёрный AND size=M AND in_stock=true` не находит этот товар.
+- Логика фильтров: между разными характеристиками — AND, между значениями одной характеристики — OR (`filter[brand]=deep-sea,urban-basic` — товары любого из брендов).
+- Счетчики фасетов disjunctive: считаются с учетом остальных фильтров, но без фильтра самого фасета; выбранные значения остаются в списке для снятия фильтра.
+- Валюта и канал продаж определяются на backend: регион проверяется по модулю Region, канал — из контекста publishable API key, статус — всегда `published`.
+
+### 12. Каталог с фасетами
+
+| | |
+|---|---|
+| **Назначение** | Каталог: товары + фасеты + точная пагинация одним запросом |
+| **Метод** | `GET` |
+| **URL** | `/store/catalog` |
+| **Авторизация** | Publishable API key |
+| **Заголовки** | `x-publishable-api-key: <MEDUSA_PUBLISHABLE_KEY>` |
+
+#### Query parameters
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `q` | `string` | Полнотекстовый запрос (необязателен для каталога) |
+| `category` | `string` | Хэндл категории |
+| `collection` | `string` | Хэндл коллекции |
+| `region_id` | `string` | Регион ценообразования; без него — регион по умолчанию (валюта магазина) |
+| `filter[code]` | `string` | Значения характеристики через запятую: `filter[brand]=deep-sea,urban-basic`. Коды — из реестра характеристик; неизвестный код → 400 |
+| `price_min` / `price_max` | `number` | Диапазон цен в валюте региона (основные единицы) |
+| `in_stock` | `boolean` | Фильтр по наличию: `true` — есть хотя бы один вариант в наличии; `false` — есть хотя бы один отсутствующий вариант (согласовано со счетчиком фасета) |
+| `sort` | `string` | `relevance` (по умолчанию), `price_asc`, `price_desc`, `newest`, `title_asc` |
+| `limit` / `offset` | `number` | Пагинация (`limit` 1–100, по умолчанию 24) |
+
+#### Пример curl
+
+```bash
+curl "http://localhost:9000/store/catalog?filter%5Bbrand%5D=deep-sea,urban-basic&limit=6" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY"
+```
+
+#### Пример ответа (200 OK, реальные данные, сокращено)
+
+```json
+{
+  "products": [
+    {
+      "id": "prod_01M87JXH5R6WX9T1HH0G6DG3EA",
+      "variant_id": "variant_01M87JXH78C4ESGHPEMMCBHZWA",
+      "title": "Худи «Полярное»",
+      "handle": "hudi-polyarnoe",
+      "sku": "HOODIE-POL-L",
+      "price": { "amount": 4590, "currency_code": "rub" },
+      "in_stock": true,
+      "category_handles": ["hoodies"],
+      "collection_handles": ["eko"],
+      "attributes": { "brand": "north-polar", "material": ["cotton", "polyester"], "rating": 4.7, "eco": true, "size": "L" }
+    }
+  ],
+  "pagination": { "total": 12, "limit": 2, "offset": 0, "hasMore": true },
+  "facets": [
+    { "code": "price", "label": "Цена", "type": "range", "unit": "RUB", "min": 390, "max": 4590 },
+    { "code": "in_stock", "label": "Наличие", "type": "boolean", "options": [
+      { "value": "true", "label": "В наличии", "count": 10, "selected": false },
+      { "value": "false", "label": "Нет в наличии", "count": 4, "selected": false }
+    ]},
+    { "code": "brand", "label": "Бренд", "type": "checkbox", "options": [
+      { "value": "medusa-originals", "label": "Medusa Originals", "count": 4, "selected": false },
+      { "value": "deep-sea", "label": "Deep Sea", "count": 3, "selected": false }
+    ]}
+  ],
+  "sortOptions": ["relevance", "price_asc", "price_desc", "newest", "title_asc"]
+}
+```
+
+`id` — ID товара (выдача сгруппирована по товарам, `variant_id` — вариант-представитель). Карточка товара и checkout обязаны использовать штатный `/store/products` с рассчитанными ценами: поисковый документ — производная проекция, не источник истины.
+
+#### Возможные HTTP-коды
+
+| Код | Причина |
+|---|---|
+| 200 | Успех (в т.ч. пустая выдача) |
+| 400 `invalid_query` | Некорректные параметры (неизвестная характеристика в фильтре, `limit=abc`, неизвестный регион и т.п.) |
+| 503 `search_unavailable` | Meilisearch недоступен |
+| 500 | Внутренняя ошибка (логируется) |
+
+### 13. Полнотекстовый поиск
+
+`GET /store/search` — тот же контракт ответа, что и каталог; параметр `q` обязателен. Поиск идет по названию, описанию, артикулу и значениям характеристик; поддерживаются русский язык, опечатки и поиск по неполному слову (проверено прототипом на Meilisearch 1.58).
+
+```bash
+curl "http://localhost:9000/store/search?q=%D1%84%D1%83%D1%82%D0%B1%D0%BE%D0%BB%D0%BA%D0%B0&limit=3" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY"
+```
+
+Проверенный ответ (26.11.2026): `total: 3` — найдены «Футболка «Простая»», «Футболка «Медуза»», «Футболка «Кракен»».
+
+> Примечание: кириллица в curl-примерах должна быть percent-encoded (браузеры и Medusa JS SDK делают это автоматически).
+
+### 14. Поисковые подсказки
+
+`GET /store/search/suggestions?q=...` — подсказки для typeahead: до 8 уникальных товаров по префиксу (название/артикул/характеристики).
+
+```bash
+curl "http://localhost:9000/store/search/suggestions?q=%D1%84%D1%83%D1%82%D0%B1" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY"
+```
+
+```json
+{
+  "suggestions": [
+    { "text": "Футболка «Простая»", "product_id": "prod_...", "handle": "futbolka-prostaya", "sku": "TEE-BASIC-OS" },
+    { "text": "Футболка «Медуза»", "product_id": "prod_...", "handle": "futbolka-meduza", "sku": "TEE-MED-L-WHT" }
+  ]
+}
+```
+
+#### Ограничения (актуальные для этапа 3, в разработке)
+
+- Значения фасетов ограничены 25 на фасет, `limit` — 100; диапазон цен фасета `price` — min/max без бакетов.
+- При смене активной версии индекса (переиндексация) до 30 секунд запросы может обслуживать предыдущая версия — корректные, но пред-переиндексационные данные.
+- Admin API характеристик, Admin UI, интеграционные тесты и полные docs/search.md / docs/filters.md / docs/indexing.md — оставшиеся задачи этапа.
 
 ---
 
