@@ -102,44 +102,108 @@ function getMeilisearchProvider(
 /**
  * Резолвит физический индекс АКТИВНОЙ версии по корневому имени.
  *
- * Официальный Search Module хранит версии вида `<root>_v<N>` и переключает
- * их атомарно; активная версия — максимальный существующий номер версии
- * (модуль монотонно наращивает номера, а брошенные версии вычищает перед
- * следующим reindex). Результат кэшируется на 30 секунд: за это окно после
- * переиндексации запросы продолжает обслуживать предыдущая версия — она все
- * еще содержит корректные данные.
+ * Основной путь — штатная активная версия официального Search Module:
+ * модуль хранит её в собственной таблице (search_index.active_version,
+ * search_index_version.physical_name, status='ready'; joiner-конфиг модуля
+ * объявляет модели внутренней бухгалтерией, публичного API активной версии
+ * не существует). Читаем через публичный PG_CONNECTION Medusa — та же база
+ * приложения, источник истины, которым пользуется сам модуль.
+ *
+ * При ошибке определения активной версии:
+ *  - используется ПОСЛЕДНЯЯ ПОДТВЕРЖДЕННАЯ ready-версия (кэш), если она
+ *    существует — это всегда ранее атомарно активированная полная версия;
+ *  - если подтвержденной версии нет — HTTP 503. Индекс выбирается ТОЛЬКО
+ *    по подтверждению из БД модуля, никогда по максимальному номеру
+ *    физической версии (строящаяся версия существует до активации).
+ *
+ * Свежий кэш (TTL 30 с) ускоряет запросы без обращения к БД.
  */
 const ACTIVE_INDEX_CACHE_TTL_MS = 30_000
 let activeIndexCache: { physicalName: string; expiresAt: number } | null = null
 
+type PgConnection = {
+  raw: (sql: string, bindings?: unknown[]) => Promise<unknown>
+}
+
+/** Код ошибки «активная версия индекса не определена» → HTTP 503. */
+export const SEARCH_INDEX_UNAVAILABLE = "search_index_unavailable"
+
+class SearchIndexUnavailableError extends Error {
+  readonly code = SEARCH_INDEX_UNAVAILABLE
+
+  constructor() {
+    super(
+      "Поисковый индекс временно недоступен: активная ready-версия не определена. Повторите запрос позже."
+    )
+    this.name = "SearchIndexUnavailableError"
+  }
+}
+
 async function resolveActivePhysicalIndex(
-  provider: SearchTypes.ISearchProvider,
-  rootName: string
+  container: MedusaContainer,
+  indexName: string
 ): Promise<string> {
-  if (
-    activeIndexCache &&
-    Date.now() < activeIndexCache.expiresAt
-  ) {
+  if (activeIndexCache && Date.now() < activeIndexCache.expiresAt) {
     return activeIndexCache.physicalName
   }
 
-  const indexes = await provider.listIndexes()
-  const versions = indexes
-    .map((entry) => {
-      const match = new RegExp(
-        `^${rootName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_v(\\d+)$`
-      ).exec(entry.name)
-      return match ? { name: entry.name, version: Number(match[1]) } : null
-    })
-    .filter((entry): entry is { name: string; version: number } => entry !== null)
-    .sort((a, b) => b.version - a.version)
-
-  const physicalName = versions[0]?.name ?? rootName
-  activeIndexCache = {
-    physicalName,
-    expiresAt: Date.now() + ACTIVE_INDEX_CACHE_TTL_MS,
+  const fresh = await resolveActivePhysicalNameFromModule(container, indexName)
+  if (fresh) {
+    activeIndexCache = {
+      physicalName: fresh,
+      expiresAt: Date.now() + ACTIVE_INDEX_CACHE_TTL_MS,
+    }
+    return fresh
   }
-  return physicalName
+
+  // Ошибка определения активной версии: деградация к последней
+  // подтвержденной ready-версии (она была атомарно активирована модулем).
+  if (activeIndexCache) {
+    return activeIndexCache.physicalName
+  }
+
+  // Подтвержденной версии нет — честный отказ вместо угадывания индекса.
+  throw new SearchIndexUnavailableError()
+}
+
+/** Активная версия из таблиц Search Module (транзакционное переключение). */
+async function resolveActivePhysicalNameFromModule(
+  container: MedusaContainer,
+  indexName: string
+): Promise<string | null> {
+  let connection: PgConnection | null = null
+  try {
+    connection = container.resolve(
+      ContainerRegistrationKeys.PG_CONNECTION
+    ) as unknown as PgConnection
+  } catch {
+    return null
+  }
+
+  try {
+    const result = (await connection.raw(
+      `SELECT siv.physical_name AS physical_name
+         FROM search_index si
+         JOIN search_index_version siv
+           ON siv.search_index_id = si.id AND siv.version = si.active_version
+        WHERE si.name = ?
+          AND si.deleted_at IS NULL
+          AND siv.deleted_at IS NULL
+          AND siv.status = 'ready'
+        LIMIT 1`,
+      [indexName]
+    )) as { rows?: Array<{ physical_name: string }> }
+
+    const rows = Array.isArray(result)
+      ? (result[0] as Array<{ physical_name: string }>)
+      : (result?.rows ?? [])
+
+    return rows[0]?.physical_name ?? null
+  } catch {
+    // Недоступность служебного запроса не должна ломать поиск:
+    // деградация к последней подтвержденной ready-версии.
+    return null
+  }
 }
 
 /** Встроенные фасеты каталога (не зависят от реестра характеристик). */
@@ -182,7 +246,10 @@ export class CatalogSearchService {
     // обслуживать корректные данные, брошенные версии вычищает сам модуль.
     const definition = searchService.getIndex(INDEX_NAME)
     const provider = getMeilisearchProvider(this.container)
-    const physicalName = await resolveActivePhysicalIndex(provider, definition.physical_name)
+    const physicalName = await resolveActivePhysicalIndex(
+      this.container,
+      INDEX_NAME
+    )
 
     return { provider, index: { ...definition, physical_name: physicalName } }
   }
@@ -911,6 +978,7 @@ export function catalogErrorResponse<T>(
 
   const message = (error as Error)?.message ?? ""
   const unavailable =
+    (error as { code?: string })?.code === SEARCH_INDEX_UNAVAILABLE ||
     message.includes("Meilisearch недоступен") ||
     (error as Error)?.name === "MeilisearchNetworkError"
   if (unavailable) {
