@@ -81,6 +81,7 @@
 | `MEILISEARCH_HOST` | `http://meilisearch:7700` | да | вручную | private | Внутренний Docker-URL Meilisearch (наружу не публикуется). Зарезервирован для этапа 3. |
 | `MEILISEARCH_MASTER_KEY` | — | да | [auto] | private | Master key Meilisearch (hex, 32 символа; минимум 16). |
 | `MEILISEARCH_INDEX_PREFIX` | `store` | да | вручную | private | Префикс поисковых индексов (этап 3). |
+| `SEARCH_RECONCILE_CRON` | `0 * * * *` | нет | вручную | private | Расписание (cron) scheduled job сверки индекса с PostgreSQL (этап 3.6.2): обнаруживает отсутствующие/устаревшие/лишние документы и точечно ремонтирует затронутые товары через Search Module. Ручной запуск — `make search-reconcile`. |
 
 ## Initialization
 

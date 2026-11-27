@@ -11,7 +11,7 @@ SHELL := /bin/bash
 
 SCRIPTS := infrastructure/scripts
 
-.PHONY: help init up down dev build logs status migrate seed lint typecheck test search-init search-reindex search-status search-logs
+.PHONY: help init up down dev build logs status migrate seed lint typecheck test search-init search-reindex search-status search-reconcile search-logs
 
 help: ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -78,6 +78,9 @@ search-reindex: ## Полная переиндексация каталога (�
 search-status: ## Статус поиска: здоровье, индексы, счетчики, проверка API
 	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-status.ts"
 
+search-reconcile: ## Сверка индекса с PostgreSQL: точечный ремонт расхождений
+	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-reconcile.ts"
+
 search-logs: ## Логи Meilisearch (Ctrl+C для выхода)
 	@docker compose logs -f --tail=100 meilisearch
 
@@ -93,4 +96,4 @@ typecheck: ## Проверка типов backend (tsc) и storefront (vue-tsc)
 	@docker compose run --rm --no-deps storefront pnpm typecheck
 
 test: ## Автотесты storefront: unit + интеграционные на живой Medusa
-	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD storefront pnpm test
+	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD -e MEILISEARCH_HOST -e MEILISEARCH_MASTER_KEY storefront pnpm test

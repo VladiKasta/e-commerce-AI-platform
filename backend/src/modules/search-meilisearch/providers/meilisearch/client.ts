@@ -284,6 +284,57 @@ export class MeilisearchClient {
     return task.taskUid ?? task.uid ?? null
   }
 
+  /**
+   * Читает сырые документы индекса (POST /documents/fetch): то, что реально
+   * хранится в Meilisearch, — используется сверкой индекса
+   * (job search-index-reconcile). В отличие от search, чтение документов
+   * не применяет distinct-дедупликацию. Право documents.get не входит в
+   * провижинируемые ключи (actions иммутабельны в Meilisearch), поэтому
+   * запрос идет master key-ом — операция внутренняя, серверная, значение
+   * не покидает backend-контейнер.
+   */
+  async fetchDocuments(
+    uid: string,
+    options: {
+      filter?: string | Array<string | string[]>
+      fields?: string[]
+      limit?: number
+      offset?: number
+    }
+  ): Promise<{ results: Array<Record<string, unknown>>; total: number }> {
+    if (!this.masterKey) {
+      throw new MeilisearchNetworkError(
+        "Чтение сырых документов требует MEILISEARCH_MASTER_KEY"
+      )
+    }
+
+    const body: Record<string, unknown> = {
+      limit: Math.max(options.limit ?? 1000, 1),
+      offset: Math.max(options.offset ?? 0, 0),
+    }
+    if (options.filter !== undefined) {
+      body.filter = options.filter
+    }
+    if (options.fields?.length) {
+      body.fields = options.fields
+    }
+
+    const payload = await this.request<{
+      results?: Array<Record<string, unknown>>
+      total?: number
+    }>(
+      "POST",
+      `/indexes/${uid}/documents/fetch`,
+      body,
+      this.masterKey
+    )
+
+    return {
+      results: payload.results ?? [],
+      total: payload.total ?? payload.results?.length ?? 0,
+    }
+  }
+
   async getTask(taskUid: number): Promise<TaskPayload> {
     return this.request<TaskPayload>(
       "GET",

@@ -69,6 +69,23 @@ module.exports = defineConfig({
         },
       },
     },
+    // Штатный Locking Module с провайдером PostgreSQL (этап 3.6.2): те же
+    // advisory-локи в БД приложения работают между процессами и инстансами.
+    // Защищает параллельные запуски сверки индекса (job search-index-reconcile)
+    // и конфликты с полной переиндексацией — Search Module берет свои
+    // seed-локи из этого же модуля.
+    {
+      resolve: "@medusajs/medusa/locking",
+      options: {
+        providers: [
+          {
+            resolve: "@medusajs/medusa/locking-postgres",
+            id: "locking-postgres",
+            is_default: true,
+          },
+        ],
+      },
+    },
     // Универсальные характеристики товаров (бренды, материалы, технические
     // параметры) — этап 3. См. backend/src/modules/catalog-attributes.
     {

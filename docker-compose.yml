@@ -23,6 +23,9 @@ x-medusa-env: &medusa-env
   MEILISEARCH_INDEX_PREFIX: ${MEILISEARCH_INDEX_PREFIX:-store}
   MEILISEARCH_SYNONYMS: ${MEILISEARCH_SYNONYMS:-}
   MEILISEARCH_STOP_WORDS: ${MEILISEARCH_STOP_WORDS:-}
+  # Этап 3.6.2: расписание scheduled job сверки поискового индекса
+  # с PostgreSQL (cron; пустое значение — раз в час).
+  SEARCH_RECONCILE_CRON: ${SEARCH_RECONCILE_CRON:-0 * * * *}
 
 services:
   # ── Инфраструктура ────────────────────────────────────────────────
@@ -171,6 +174,10 @@ services:
       - "${NUXT_PORT:-3000}:${NUXT_PORT:-3000}"
     volumes:
       - ./storefront:/server/storefront
+      # Этап 3.6.3: read-only исходники репозитория для unit-тестов
+      # трансформации поисковых документов (tests/unit импортирует реальный
+      # код индексатора из ../backend; зависимости — чистый JS @medusajs).
+      - .:/server/repo:ro
       # .nuxt НЕ изолируется анонимным volume: сгенерированные типы Nuxt
       # (runtimeConfig, auto-imports) читает IDE на хосте. Их обновляет
       # `nuxt prepare` в контейнере (выполняется в make lint/typecheck/test;

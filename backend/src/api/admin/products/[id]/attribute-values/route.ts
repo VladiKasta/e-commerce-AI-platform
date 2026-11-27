@@ -35,7 +35,9 @@ type ValueFilters = Parameters<CatalogAttributeModuleService["listProductAttribu
  *
  * DELETE /admin/products/:id/attribute-values?attribute_id=...[&variant_id=...]
  * — удаление значений одной характеристики в области товара (или
- * конкретного варианта).
+ * конкретного варианта). Значения помечаются deleted_at (soft delete):
+ * маршрут отвечает прежним контрактом, а строки остаются читаемыми
+ * для событийной синхронизации поискового индекса.
  */
 export async function GET(
   req: AuthenticatedMedusaRequest,
@@ -133,7 +135,10 @@ export async function DELETE(
   const stale = existing.filter((value) => (value.variant_id ?? null) === scopeVariantId)
 
   if (stale.length) {
-    await service.deleteProductAttributeValues(stale.map((value) => value.id))
+    // Soft delete (не физическое удаление): событие удаления значения
+    // несет только id строк, и строки должны остаться читаемыми для
+    // резолвинга затронутых товаров событийной синхронизацией индекса.
+    await service.softDeleteProductAttributeValues(stale.map((value) => value.id))
   }
 
   res.json({

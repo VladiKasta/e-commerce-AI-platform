@@ -175,8 +175,13 @@ async function resolveActivePhysicalIndex(
   throw new SearchIndexUnavailableError()
 }
 
-/** Активная версия из таблиц Search Module (транзакционное переключение). */
-async function resolveActivePhysicalNameFromModule(
+/**
+ * Активная версия из таблиц Search Module (транзакционное переключение).
+ * Экспортирована для job'а сверки индекса: сверке нужен свежий (не кэш)
+ * физический индекс активной ready-версии — тот же источник истины, что
+ * у каталог-сервиса.
+ */
+export async function resolveActivePhysicalNameFromModule(
   container: MedusaContainer,
   indexName: string
 ): Promise<string | null> {

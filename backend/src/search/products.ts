@@ -564,7 +564,23 @@ async function resolveAffectedProducts(
   }
 
   // События значений характеристик: значение → товар.
-  if (name.startsWith("catalog_attributes.product_attribute_value.")) {
+  //
+  // Medusa 2.23 строит имена событий моделей модуля через
+  // buildModuleResourceEventName: kebabCase от имени модели — многословная
+  // модель product_attribute_value эмитится как «product-attribute-value»
+  // (проверено на живом окружении). Штатное событие несет только
+  // data = {id} строк значений.
+  if (name.startsWith("catalog_attributes.product-attribute-value.")) {
+    // Обогащенное событие (subscriber catalog-attribute-values-search):
+    // id товаров уже в payload — строки-значения к этому моменту
+    // soft-deleted и недоступны remote query.
+    const related = (data.product_id ?? data.product_ids ?? null) as
+      | string
+      | string[]
+      | null
+    if (related) {
+      return Array.isArray(related) ? related : [String(related)]
+    }
     const { data: values } = await query.graph({
       entity: "product_attribute_value",
       fields: ["id", "product_id"],
@@ -685,12 +701,16 @@ export default defineSearchIndex({
     "inventory.reservation-item.created",
     "inventory.reservation-item.updated",
     "inventory.reservation-item.deleted",
+    // Medusa 2.23 эмитит события моделей модуля с kebab-case именем объекта
+    // (buildModuleResourceEventName → kebabCase от имени модели): однословная
+    // модель attribute совпадает с snake-формой, многословная
+    // product_attribute_value — нет (проверено на живом окружении).
     "catalog_attributes.attribute.created",
     "catalog_attributes.attribute.updated",
     "catalog_attributes.attribute.deleted",
-    "catalog_attributes.product_attribute_value.created",
-    "catalog_attributes.product_attribute_value.updated",
-    "catalog_attributes.product_attribute_value.deleted",
+    "catalog_attributes.product-attribute-value.created",
+    "catalog_attributes.product-attribute-value.updated",
+    "catalog_attributes.product-attribute-value.deleted",
   ],
   async consume(event, context) {
     const query = context.container.query
@@ -784,5 +804,14 @@ export default defineSearchIndex({
   },
 })
 
-// Экспорт для unit-тестов трансформации документов.
-export { buildDocuments as buildProductDocuments, INDEX_NAME }
+// Экспорт для unit-тестов трансформации документов и job'а сверки индекса
+// (backend/src/jobs/search-index-reconcile.ts): сверка собирает ожидаемые
+// документы теми же загрузчиками и трансформацией, что и индексатор, —
+// без второго индексатора.
+export {
+  buildDocuments as buildProductDocuments,
+  loadProductsByIds as loadProductRows,
+  loadAttributeData as loadProductAttributeData,
+  PRODUCT_FIELDS as PRODUCT_INDEX_FIELDS,
+  INDEX_NAME,
+}

@@ -134,9 +134,16 @@ class CatalogAttributeModuleService extends MedusaService({
 
   /**
    * Удаляет существующие значения характеристики в заданной области
-   * (товар или конкретный вариант). Имя отличается от сгенерированного
-   * MedusaService.deleteProductAttributeValues(ids), чтобы не перекрывать
-   * его рекурсивно.
+   * (товар или конкретный вариант) soft delete-ом. Имя отличается от
+   * сгенерированного MedusaService.deleteProductAttributeValues(ids), чтобы не
+   * перекрывать его рекурсивно.
+   *
+   * Soft delete (а не физическое удаление) нужен событийной синхронизации
+   * поискового индекса: событие catalog_attributes.product-attribute-value.
+   * deleted несет только id строк, а строки к моменту обработки события
+   * должны оставаться читаемыми (сервис модуля, withDeleted) для резолвинга
+   * затронутых товаров. Семантика модуля не меняется: list-методы и
+   * query.graph по умолчанию не возвращают soft-deleted строки.
    */
   private async deleteScopeValues(entry: {
     attribute_id: string
@@ -156,7 +163,7 @@ class CatalogAttributeModuleService extends MedusaService({
       .map((row) => row.id)
 
     if (stale.length) {
-      await this.deleteProductAttributeValues(stale)
+      await this.softDeleteProductAttributeValues(stale)
     }
   }
 
