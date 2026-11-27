@@ -24,13 +24,17 @@ module.exports = defineConfig({
     // URL storefront'а, используется Medusa Admin для ссылок (например,
     // shareable payment links).
     storefrontUrl: process.env.NUXT_PUBLIC_SITE_URL,
-    vite: (config) => {
+    vite: () => {
       // Настройка dev-сервера Medusa Admin для работы внутри Docker.
-      // Основано на официальном руководстве Medusa по установке с Docker.
+      // Возвращается ТОЛЬКО дельта: базовую конфигурацию (включая react-
+      // плагин) админ-бандлер объединяет сам. Спред входного config
+      // дублировал react-плагин и вызывал двойную react-refresh
+      // трансформацию файлов src/admin (синтаксическая ошибка
+      // "RefreshRuntime has already been declared") — известный баг
+      // Docker-развёртываний, исправлен в документации Medusa
+      // (medusajs/medusa#14545).
       return {
-        ...config,
         server: {
-          ...(config.server ?? {}),
           host: "0.0.0.0",
           allowedHosts: ["localhost", ".localhost", "127.0.0.1"],
           hmr: {

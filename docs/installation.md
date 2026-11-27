@@ -80,6 +80,18 @@ make test      # автотесты storefront: unit + интеграционн�
 make build     # пересобрать образы (например, после изменения package.json/lockfile)
 ```
 
+### Типы Nuxt для IDE (`.nuxt`)
+
+Каталог `.nuxt` (сгенерированные типы Nuxt: `runtimeConfig`, auto-imports, маршруты) **не изолируется** анонимным volume и виден на хосте — IDE читает типы напрямую из репозитория. Типы генерирует `nuxt prepare` в контейнере; эта команда входит в `make lint`, `make typecheck` и `make test`, поэтому после изменения `nuxt.config.ts` (например, `runtimeConfig`) достаточно запустить любую из них.
+
+Только генерация типов, без проверок:
+
+```bash
+docker compose run --rm --no-deps storefront pnpm nuxt prepare
+```
+
+Node.js и pnpm на хосте не требуются. Если IDE показывает устаревшие типы (например, `unknown` вместо `string` у полей `runtimeConfig`) — запустите команду выше и перезапустите TS-сервер (VS Code: «TypeScript: Restart TS Server»).
+
 ## 5. Диагностика ошибок
 
 ### `make init` завершается ошибкой валидации

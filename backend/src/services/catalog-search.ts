@@ -10,6 +10,7 @@ import {
   Modules,
 } from "@medusajs/framework/utils"
 import type { CatalogAttributeModuleService } from "../modules/catalog-attributes"
+import { isMeilisearchNetworkError } from "../modules/search-meilisearch/providers/meilisearch/filters"
 import MeilisearchProviderService from "../modules/search-meilisearch/providers/meilisearch/service"
 import type {
   CatalogFacet,
@@ -36,11 +37,19 @@ import {
  * docs/ARCHITECTURE.md):
  *
  *  1. Основной запрос: distinct=product_id + page-пагинация → ТОЧНЫЙ totalHits
- *     (число уникальных товаров) и сгруппированная выдача.
- *  2. Disjunctive faceting: facetDistribution Meilisearch считает ВАРИАНТЫ,
- *     поэтому точные счетчики уникальных товаров считаются отдельными
- *     count-запросами на каждое значение фасета (hitsPerPage=0, точный
- *     totalHits) в ОДНОМ multi-search вызове.
+ *     (число уникальных товаров) и сгруппированная выдача. В этом же запросе
+ *     запрашиваются facetDistribution/facetStats всех фасетов БЕЗ активного
+ *     собственного фильтра (для них disjunctive-режим совпадает с базовым).
+ *  2. Disjunctive faceting: отдельные подзапросы — только для фасетов С
+ *     активным собственным фильтром (исключаем его, чтобы пересчитать фасет).
+ *     facetDistribution Meilisearch считает ПРЕДСТАВИТЕЛЕЙ distinct
+ *     (проверено на живом индексе), поэтому точные счетчики уникальных
+ *     товаров считаются отдельными count-запросами на каждое значение
+ *     (hitsPerPage=0, точный totalHits) в ОДНОМ multi-search вызове.
+ *     Count-запросы НЕ выполняются, когда distribution фасета пуста —
+ *     это подтвержденный ноль (ни один подходящий документ не имеет
+ *     значений фасета); отсутствие значения в НЕПУСТОЙ distribution нулем
+ *     не считается (выдача может быть ограничена maxValuesPerFacet).
  *  3. Диапазоны: facetStats (min/max) с фильтрами «без собственного фильтра».
  *
  * Регион, валюта и канал продаж определяются и проверяются на backend:
@@ -695,6 +704,36 @@ export class CatalogSearchService {
       })
     }
 
+    // ── Раунд 1: основная выдача + перечисление значений фасетов ─────────
+    // Оптимизация: у фасета БЕЗ активного собственного фильтра disjunctive-
+    // режим совпадает с базовым, поэтому его distribution/stats запрашиваются
+    // в основном запросе. Отдельный подзапрос остается только у фасетов
+    // С активным собственным фильтром (его нужно исключить).
+    const selectedValues = new Map(Object.entries(query.filter ?? {}))
+
+    const facetHasActiveFilter = (facet: (typeof facetPlan)[number]): boolean => {
+      if (facet.field === "price") {
+        return (
+          query.price_min !== undefined ||
+          query.price_max !== undefined
+        )
+      }
+      if (facet.field === "in_stock") {
+        return query.in_stock !== undefined
+      }
+      return (selectedValues.get(facet.code)?.length ?? 0) > 0
+    }
+
+    const inactiveFacets = facetPlan.filter((facet) => !facetHasActiveFilter(facet))
+    const activeFacets = facetPlan.filter((facet) => facetHasActiveFilter(facet))
+
+    const baseFacetRequests: Array<string | SearchTypes.SearchFacetRequest> =
+      inactiveFacets.map((facet) =>
+        facet.kind === "range"
+          ? ({ field: facet.field, type: "stats" } as SearchTypes.SearchFacetRequest)
+          : facet.field
+      )
+
     const round1: ProviderQuery[] = [
       providerQuery(
         this.buildFilters({
@@ -707,11 +746,12 @@ export class CatalogSearchService {
           pagination: { skip: query.offset, take: query.limit },
           distinct: "product_id",
           count: "exact",
+          ...(baseFacetRequests.length ? { facets: baseFacetRequests } : {}),
         }
       ),
     ]
 
-    for (const facet of facetPlan) {
+    for (const facet of activeFacets) {
       round1.push(
         providerQuery(
           this.buildFilters({
@@ -749,18 +789,24 @@ export class CatalogSearchService {
     const round1Results = await provider.searchMany(round1)
     const main = round1Results[0]
 
+    // Источник distribution/stats каждого фасета: основной запрос для
+    // фасетов без собственного фильтра, disjunctive-подзапрос — для активных.
+    const facetSources = new Map<string, (typeof round1Results)[number]>()
+    inactiveFacets.forEach((facet) => facetSources.set(facet.code, main))
+    activeFacets.forEach((facet, position) =>
+      facetSources.set(facet.code, round1Results[position + 1])
+    )
+
     // ── Раунд 2: точные счетчики уникальных товаров на значение ─────────
-    const selectedValues = new Map(Object.entries(query.filter ?? {}))
     const countQueries: Array<{ facet: (typeof facetPlan)[number]; value: string }> = []
     const enumerated = new Map<string, Array<{ value: string; approximate: number }>>()
 
-    for (const [position, result] of round1Results.slice(1).entries()) {
-      const facet = facetPlan[position]
+    for (const facet of facetPlan) {
       if (facet.kind === "range") {
         continue
       }
-      const distribution = result.facets?.[facet.field]
-      const values =
+      const distribution = facetSources.get(facet.code)?.facets?.[facet.field]
+      const distributionValues =
         distribution?.type === "value"
           ? distribution.values.map((entry) => ({
               value: entry.value,
@@ -771,6 +817,7 @@ export class CatalogSearchService {
       // Дополнительно гарантированно показываем выбранные значения
       // (в т.ч. с нулевым количеством — требование этапа).
       const selected = selectedValues.get(facet.code) ?? []
+      const values = [...distributionValues]
       for (const value of selected) {
         if (!values.some((entry) => entry.value === value)) {
           values.push({ value, approximate: 0 })
@@ -782,6 +829,14 @@ export class CatalogSearchService {
         .slice(0, CATALOG_LIMITS.maxFacetValues)
       enumerated.set(facet.code, top)
 
+      // Пустая distribution = подтвержденный ноль: ни один подходящий
+      // документ не имеет значений фасета, count-запросы вернут 0.
+      // Отсутствие значения в НЕПУСТОЙ distribution нулем не является
+      // (лимит maxValuesPerFacet) — для таких значений count-запрос
+      // остается (в т.ч. для выбранных значений с возможным нулем).
+      if (!distributionValues.length) {
+        continue
+      }
       for (const entry of top) {
         countQueries.push({ facet, value: entry.value })
       }
@@ -849,9 +904,7 @@ export class CatalogSearchService {
     const facets: CatalogFacet[] = []
     for (const facet of facetPlan) {
       if (facet.kind === "range") {
-        const stats = round1Results
-          .slice(1)
-          .find((result) => result.facets?.[facet.field]?.type === "stats")?.facets?.[facet.field]
+        const stats = facetSources.get(facet.code)?.facets?.[facet.field]
         const range = stats?.type === "stats" ? stats : null
         facets.push({
           code: facet.code,
@@ -979,8 +1032,7 @@ export function catalogErrorResponse<T>(
   const message = (error as Error)?.message ?? ""
   const unavailable =
     (error as { code?: string })?.code === SEARCH_INDEX_UNAVAILABLE ||
-    message.includes("Meilisearch недоступен") ||
-    (error as Error)?.name === "MeilisearchNetworkError"
+    isMeilisearchNetworkError(error)
   if (unavailable) {
     logger?.warn(`[catalog] Meilisearch недоступен: ${message}`)
     res.status(503).json({

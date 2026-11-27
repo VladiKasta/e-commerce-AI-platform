@@ -81,20 +81,6 @@ search-status: ## Статус поиска: здоровье, индексы, �
 search-logs: ## Логи Meilisearch (Ctrl+C для выхода)
 	@docker compose logs -f --tail=100 meilisearch
 
-# ── Поиск (Meilisearch) ─────────────────────────────────────────────────────
-
-search-init: ## Инициализация поиска: индексы, настройки, первоначальная индексация
-	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-init.ts"
-
-search-reindex: ## Полная переиндексация каталога (атомарная замена версии индекса)
-	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-reindex.ts"
-
-search-status: ## Статус поиска: здоровье, индексы, счетчики, проверка API
-	@docker compose exec -T medusa sh -c "cd /server/backend && ./node_modules/.bin/medusa exec ./src/scripts/search-status.ts"
-
-search-logs: ## Логи Meilisearch (Ctrl+C для выхода)
-	@docker compose logs -f --tail=100 meilisearch
-
 # ── Проверки качества ────────────────────────────────────────────────────────
 # Запускаются внутри Docker — Node.js и pnpm на хосте не требуются.
 
@@ -107,4 +93,4 @@ typecheck: ## Проверка типов backend (tsc) и storefront (vue-tsc)
 	@docker compose run --rm --no-deps storefront pnpm typecheck
 
 test: ## Автотесты storefront: unit + интеграционные на живой Medusa
-	@docker compose run --rm --no-deps storefront pnpm test
+	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD storefront pnpm test

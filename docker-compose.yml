@@ -171,8 +171,11 @@ services:
       - "${NUXT_PORT:-3000}:${NUXT_PORT:-3000}"
     volumes:
       - ./storefront:/server/storefront
+      # .nuxt НЕ изолируется анонимным volume: сгенерированные типы Nuxt
+      # (runtimeConfig, auto-imports) читает IDE на хосте. Их обновляет
+      # `nuxt prepare` в контейнере (выполняется в make lint/typecheck/test;
+      # отдельная команда — см. docs/installation.md).
       - /server/storefront/node_modules
-      - /server/storefront/.nuxt
       - /server/storefront/.output
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${NUXT_PORT:-3000}/api/health || exit 1"]

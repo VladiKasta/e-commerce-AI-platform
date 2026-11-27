@@ -175,61 +175,6 @@ class CatalogAttributeModuleService extends MedusaService({
     }
     return { text_value: value, numeric_value: null, boolean_value: null }
   }
-
-  /**
-   * Возвращает характеристики с их значениями для заданных товаров:
-   * основа для построения поисковых документов.
-   */
-  async getAttributesForProducts(productIds: string[]): Promise<
-    Map<string, Array<{ attribute: AttributeDTO; values: Array<string | number | boolean> }>>
-  > {
-    const result = new Map<
-      string,
-      Array<{ attribute: AttributeDTO; values: Array<string | number | boolean> }>
-    >()
-
-    if (!productIds.length) {
-      return result
-    }
-
-    const [attributes, values] = await Promise.all([
-      this.listAttributes(),
-      this.listProductAttributeValues({
-        product_id: productIds,
-      } as Parameters<typeof this.listProductAttributeValues>[0]),
-    ])
-
-    const attributeById = new Map(attributes.map((attribute) => [attribute.id, attribute]))
-
-    for (const row of values) {
-      const attribute = attributeById.get(row.attribute_id)
-      if (!attribute) {
-        continue
-      }
-
-      const value =
-        row.text_value !== null && row.text_value !== undefined
-          ? row.text_value
-          : row.numeric_value !== null && row.numeric_value !== undefined
-            ? row.numeric_value
-            : row.boolean_value
-
-      if (value === null || value === undefined) {
-        continue
-      }
-
-      const bucket = result.get(row.product_id) ?? []
-      const existing = bucket.find((item) => item.attribute.id === attribute.id)
-      if (existing) {
-        existing.values.push(value)
-      } else {
-        bucket.push({ attribute, values: [value] })
-      }
-      result.set(row.product_id, bucket)
-    }
-
-    return result
-  }
 }
 
 export default CatalogAttributeModuleService
