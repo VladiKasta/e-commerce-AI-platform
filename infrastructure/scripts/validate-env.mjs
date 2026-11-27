@@ -189,6 +189,83 @@ if (meiliKey && meiliKey.length < 16) {
 }
 requireValue("MEILISEARCH_INDEX_PREFIX", "префикс поисковых индексов")
 
+// ── Email-уведомления (этап 5.2.3) ────────────────────────────────
+const notificationEnabled = (
+  config.NOTIFICATION_ENABLED ?? "true"
+).toLowerCase()
+if (!["true", "false"].includes(notificationEnabled)) {
+  errors.push(
+    `NOTIFICATION_ENABLED должен быть true или false, получено: "${config.NOTIFICATION_ENABLED}"`
+  )
+}
+
+const mailpitEnabled = (config.MAILPIT_ENABLED ?? "false").toLowerCase()
+if (!["true", "false"].includes(mailpitEnabled)) {
+  errors.push(
+    `MAILPIT_ENABLED должен быть true или false, получено: "${config.MAILPIT_ENABLED}"`
+  )
+}
+// Mailpit — инструмент локальной разработки: в production он не включается.
+if (
+  mailpitEnabled === "true" &&
+  String(config.NODE_ENV ?? "").toLowerCase() === "production"
+) {
+  errors.push(
+    "MAILPIT_ENABLED=true недопустим при NODE_ENV=production — Mailpit предназначен только для локальной разработки (SMTP-конфигурация должна указывать на реальный сервер)"
+  )
+}
+
+const notificationsOn = notificationEnabled === "true"
+const smtpHost = config.SMTP_HOST?.trim() ?? ""
+if (notificationsOn && smtpHost === "") {
+  errors.push(
+    "SMTP_HOST — обязательная переменная при NOTIFICATION_ENABLED=true (для локальной разработки: mailpit)"
+  )
+}
+if (smtpHost) {
+  const smtpPort = config.SMTP_PORT?.trim() ?? "587"
+  const port = Number.parseInt(smtpPort, 10)
+  if (Number.isNaN(port) || port < 1 || port > 65535) {
+    errors.push(
+      `SMTP_PORT должен быть числом от 1 до 65535, получено: "${smtpPort}"`
+    )
+  }
+  const smtpSecure = (config.SMTP_SECURE ?? "false").toLowerCase()
+  if (!["true", "false"].includes(smtpSecure)) {
+    errors.push(
+      `SMTP_SECURE должен быть true или false, получено: "${config.SMTP_SECURE}"`
+    )
+  }
+  const fromEmail = config.SMTP_FROM_EMAIL?.trim() ?? ""
+  // Домен без точки допустим для локальной разработки (Mailpit, SMTP_HOST=mailpit);
+  // корректность адреса отправителя в production в итоге проверяет SMTP-сервер.
+  if (!/^[^\s@]+@[^\s@]+$/.test(fromEmail)) {
+    errors.push(
+      `SMTP_FROM_EMAIL должен быть корректным email отправителя, получено: "${fromEmail}"`
+    )
+  }
+  if (mailpitEnabled === "true" && smtpHost !== "mailpit") {
+    warnings.push(
+      "MAILPIT_ENABLED=true, но SMTP_HOST указывает не на mailpit — письма будут уходить на настроенный SMTP-сервер, а не в Mailpit"
+    )
+  }
+  if (
+    notificationsOn &&
+    mailpitEnabled === "false" &&
+    smtpHost === "mailpit"
+  ) {
+    errors.push(
+      "SMTP_HOST=mailpit при MAILPIT_ENABLED=false — сервис Mailpit не будет запущен; укажите реальный SMTP-сервер или включите Mailpit"
+    )
+  }
+}
+const retryWindow = config.NOTIFICATION_RETRY_WINDOW_MINUTES?.trim() ?? "15"
+if (Number.isNaN(Number.parseInt(retryWindow, 10)) || Number.parseInt(retryWindow, 10) < 1) {
+  errors.push(
+    `NOTIFICATION_RETRY_WINDOW_MINUTES должен быть целым числом минут ≥1, получено: "${retryWindow}"`
+  )
+}
+
 // ── Initialization ────────────────────────────────────────────────────
 const seedDemoData = requireValue("SEED_DEMO_DATA", "флаг демо-данных")
 if (seedDemoData && !["true", "false"].includes(seedDemoData)) {

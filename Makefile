@@ -11,6 +11,10 @@ SHELL := /bin/bash
 
 SCRIPTS := infrastructure/scripts
 
+# Этап 5.2.3: Mailpit (локальный SMTP-ящик) запускается командами ниже только
+# при MAILPIT_ENABLED=true в корневом .env (profile compose; в production — false).
+MAILPIT := $(shell test "$$(grep -E '^MAILPIT_ENABLED=true' .env 2>/dev/null | head -1)" = "MAILPIT_ENABLED=true" && echo mailpit)
+
 .PHONY: help init up down dev build logs status migrate seed lint typecheck test search-init search-reindex search-status search-reconcile search-logs
 
 help: ## Показать список команд
@@ -25,7 +29,7 @@ init: ## Полная инициализация с нуля (проверки, 
 	@if command -v node >/dev/null 2>&1; then \
 		node $(SCRIPTS)/validate-env.mjs || exit 1; \
 	fi
-	@docker compose up -d postgres redis meilisearch --wait
+	@docker compose up -d postgres redis meilisearch $(MAILPIT) --wait
 	@docker compose build medusa storefront
 	@echo "==> Инициализация базы данных (идемпотентно)"
 	@docker compose run --rm init
@@ -34,18 +38,21 @@ init: ## Полная инициализация с нуля (проверки, 
 	@echo ""
 	@echo "Готово. Medusa Admin: http://localhost:$$(grep -E '^MEDUSA_PORT=' .env | cut -d= -f2)/app"
 	@echo "Логин администратора хранится в .env (ADMIN_EMAIL / ADMIN_PASSWORD)."
+ifneq ($(MAILPIT),)
+	@echo "Mailpit (email-тестирование): http://localhost:$$(grep -E '^MAILPIT_UI_PORT=' .env | cut -d= -f2 || echo 8025)"
+endif
 
 # ── Управление стеком ────────────────────────────────────────────────────────
 
 up: ## Запустить все сервисы в фоне (после make init)
-	@docker compose up -d --build --renew-anon-volumes --wait
+	@docker compose up -d --build --renew-anon-volumes $(MAILPIT) --wait
 	@bash $(SCRIPTS)/status.sh --wait
 
 down: ## Остановить все сервисы (данные и volumes сохраняются)
 	@docker compose down
 
 dev: ## Запустить все сервисы в foreground с логами (hot reload)
-	@docker compose up --build --renew-anon-volumes
+	@docker compose up --build --renew-anon-volumes $(MAILPIT)
 
 build: ## Пересобрать Docker-образы backend и storefront
 	@docker compose build medusa storefront
@@ -96,4 +103,5 @@ typecheck: ## Проверка типов backend (tsc) и storefront (vue-tsc)
 	@docker compose run --rm --no-deps storefront pnpm typecheck
 
 test: ## Автотесты storefront: unit + интеграционные на живой Medusa
-	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD -e MEILISEARCH_HOST -e MEILISEARCH_MASTER_KEY storefront pnpm test
+	@test -n "$(MAILPIT)" && docker compose up -d --wait mailpit >/dev/null 2>&1 || true
+	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD -e MEILISEARCH_HOST -e MEILISEARCH_MASTER_KEY -e MAILPIT_HOST=$${MAILPIT_HOST:-http://mailpit:8025} storefront pnpm test

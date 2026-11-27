@@ -29,7 +29,7 @@ make init
 1. Проверку окружения (`infrastructure/scripts/check-prerequisites.sh`).
 2. Генерацию отсутствующих секретов (POSTGRES_PASSWORD, JWT_SECRET, COOKIE_SECRET, ADMIN_PASSWORD, MEILISEARCH_MASTER_KEY) — существующие значения не перезаписываются.
 3. Валидацию конфигурации (`infrastructure/scripts/validate-env.mjs`).
-4. Запуск PostgreSQL, Redis, Meilisearch с ожиданием health checks.
+4. Запуск PostgreSQL, Redis, Meilisearch (и Mailpit при `MAILPIT_ENABLED=true` — локальный SMTP-ящик для email-уведомлений, этап 5.2.3) с ожиданием health checks.
 5. Сборку Docker-образов backend и storefront.
 6. Одноразовую инициализацию: миграции Medusa → seed → администратор → publishable API key (записывается в `.env`).
 7. Запуск Medusa и storefront с ожиданием готовности.
@@ -39,6 +39,7 @@ make init
 
 - Витрина: <http://localhost:3000>
 - Medusa Admin: <http://localhost:9000/app> (логин — `ADMIN_EMAIL`/`ADMIN_PASSWORD` из `.env`)
+- Mailpit (email-тестирование, только при `MAILPIT_ENABLED=true`): <http://localhost:8025> — письма уведомлений (сброс пароля, перенос заказа; этап 5.2.3)
 
 ### Альтернатива без Makefile
 

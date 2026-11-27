@@ -82,6 +82,25 @@
 | `ADMIN_EMAIL` | `admin@example.com` | да | вручную | private | Email администратора Medusa Admin; создается один раз, повторно не пересоздается. |
 | `ADMIN_PASSWORD` | — | да | [auto] | private | Пароль администратора (hex, 16 символов; минимум 8). Передается только init-контейнеру. |
 
+## Email-уведомления (этап 5.2.3)
+
+Доставка одноразовых токенов (сброс пароля, перенос заказа) через штатный Notification Module Medusa с провайдером `notification-smtp`. Полная архитектура, шаблоны и обработка ошибок — [docs/notifications.md](notifications.md). SMTP-credentials передаются только backend-контейнерам и никогда не попадают в storefront.
+
+| Переменная | Значение по умолчанию | Обязательна | Заполнение | Доступ | Назначение |
+|---|---|---|---|---|---|
+| `NOTIFICATION_ENABLED` | `true` | да | вручную | private | `false` — подписчики и job повторной доставки полностью выключены (события ядра эмитятся, уведомления не создаются). |
+| `SMTP_HOST` | `mailpit` (в `.env.example`) | да (при `NOTIFICATION_ENABLED=true`) | вручную | private | Хост SMTP-сервера. Локальная разработка — Mailpit. |
+| `SMTP_PORT` | `587` | нет | вручную | private | Порт SMTP (Mailpit — 1025). |
+| `SMTP_SECURE` | `false` | нет | вручную | private | `true` — TLS с момента соединения (порт 465); `false` — STARTTLS. |
+| `SMTP_USER` | пусто | нет | вручную | private | Логин SMTP (Mailpit — без аутентификации). |
+| `SMTP_PASSWORD` | пусто | нет | вручную | private | Пароль SMTP. |
+| `SMTP_FROM_EMAIL` | `no-reply@localhost` | да (при `NOTIFICATION_ENABLED=true`) | вручную | private | Адрес отправителя писем. |
+| `SMTP_FROM_NAME` | `STORE_NAME` | нет | вручную | private | Имя отправителя. |
+| `NOTIFICATION_RETRY_CRON` | `*/5 * * * *` | нет | вручную | private | Расписание scheduled job-а повторной доставки неудачных писем (cron). |
+| `NOTIFICATION_RETRY_WINDOW_MINUTES` | `15` | нет | вручную | private | Окно повторов в минутах (≈ TTL reset-токена 15 мин — мертвые ссылки не рассылаются). |
+| `MAILPIT_ENABLED` | `true` | да | вручную | — | Запуск Mailpit в локальном окружении (make init/up/dev; compose profile). **`false` в production** (валидатор запрещает `true` при `NODE_ENV=production`). |
+| `MAILPIT_UI_PORT` | `8025` | нет | вручную | — | Порт Web UI Mailpit на хосте (только `127.0.0.1`). |
+
 ## Nuxt (storefront)
 
 | Переменная | Значение по умолчанию | Обязательна | Заполнение | Доступ | Назначение |

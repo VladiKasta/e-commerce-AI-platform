@@ -29,6 +29,8 @@ set +a
 
 MEDUSA_PORT="${MEDUSA_PORT:-9000}"
 NUXT_PORT="${NUXT_PORT:-3000}"
+MAILPIT_UI_PORT="${MAILPIT_UI_PORT:-8025}"
+ENV_FILE=".env"
 TIMEOUT="${STATUS_TIMEOUT:-180}"
 
 results=()
@@ -53,6 +55,17 @@ check_storefront() {
   curl -fsS "http://localhost:${NUXT_PORT}/api/health" >/dev/null 2>&1
 }
 
+# Этап 5.2.3: Mailpit проверяется только когда включен (MAILPIT_ENABLED=true
+# в корневом .env) и запущен — иначе сервис не развернут и это не ошибка.
+# Отдельного /ready-маршрута у Mailpit нет — используется API-заглушка списка.
+check_mailpit() {
+  curl -fsS "http://localhost:${MAILPIT_UI_PORT:-8025}/api/v1/messages" 2>/dev/null | grep -q total
+}
+
+mailpit_enabled() {
+  grep -qE '^MAILPIT_ENABLED=true' "${ENV_FILE}" 2>/dev/null
+}
+
 run_checks() {
   local all_ok=true
 
@@ -61,6 +74,9 @@ run_checks() {
   if check_meilisearch; then results+=("meilisearch:OK"); else results+=("meilisearch:FAIL"); all_ok=false; fi
   if check_medusa; then results+=("medusa:OK"); else results+=("medusa:FAIL"); all_ok=false; fi
   if check_storefront; then results+=("storefront:OK"); else results+=("storefront:FAIL"); all_ok=false; fi
+  if mailpit_enabled && docker compose ps --status running 2>/dev/null | grep -q mailpit; then
+    if check_mailpit; then results+=("mailpit:OK"); else results+=("mailpit:FAIL"); all_ok=false; fi
+  fi
 
   $all_ok
 }

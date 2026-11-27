@@ -1463,7 +1463,7 @@ Set-Cookie: connect.sid=<opaque>; Path=/; HttpOnly
 | **URL** | `/auth/customer/emailpass/reset-password` |
 | **Авторизация** | Не требуется |
 
-Тело: `{ "identifier": "<email>" }`. Ответ — **201 без тела** для существующего и несуществующего email **одинаково** (перечисление email невозможно, проверено). Одноразовый reset-токен (TTL **15 минут**, `purpose: "reset"`, jti, атомарное поглощение при использовании — по исходникам 2.23) генерируется workflow и публикуется **событием** `auth.password_reset_token_generated` — доставка получателю требует notification-провайдера/подписчика, из коробки не настроена (подэтап 5.2.3). Возможные коды: 201; **429** `rate_limited` — превышен лимит (IP 30/60 с, identifier 3/ч — этап 5.2.2, одинаково для любых email).
+Тело: `{ "identifier": "<email>" }`. Ответ — **201 без тела** для существующего и несуществующего email **одинаково** (перечисление email невозможно, проверено). Одноразовый reset-токен (TTL **15 минут**, `purpose: "reset"`, jti, атомарное поглощение при использовании — по исходникам 2.23) генерируется workflow и публикуется **событием `auth.password_reset`** (фактическое имя 2.23, подтверждено live-probe; имя `auth.password_reset_token_generated` из старых версий в 2.23 не эмитится). С этапа 5.2.3 токен доставляется письмом через штатный Notification Module (провайдер `notification-smtp`, шаблон `customer-password-reset`, ссылка `/reset-password?token=…&email=…`) — для существующих identity; несуществующий email события не порождает, письма нет. Архитектура — [docs/notifications.md](notifications.md). Возможные коды: 201; **429** `rate_limited` — превышен лимит (IP 30/60 с, identifier 3/ч — этап 5.2.2, одинаково для любых email).
 
 ### 46. Смена пароля
 
@@ -1585,7 +1585,7 @@ HTTP 200
 
 Штатный механизм связывания ранее оформленных гостевых заказов с зарегистрированным покупателем. **С этапа 5.2.1 инициатор request/cancel проверяется серверно** (middleware `order-access.ts`): допустим только покупатель, чей email совпадает с email заказа (легитимная семантика Medusa «оформил гостем со своим email — забираю в аккаунт»); посторонний получает тот же 404, что и для несуществующего заказа, — ответ с полными данными заказа уходит только легитимному инициатору (закрывает утечку из аудита 5.1):
 
-- `POST /store/orders/{id}/transfer/request` (Bearer покупателя; тело `{ "description": "..." (опц.), "update_order_email": bool (опц.) }`) → **200** `{ "order": … }`. Создает order change типа `transfer` (статус `requested`, токен-UUID внутри change-action), публикует событие `order.transfer_requested`; токен предназначен для доставки на **email заказа** (нужен notification-провайдер, как в 45). Повторный request до завершения → **400** `invalid_data` `"Order (…) already has an active transfer request"` (проверено). **429** `rate_limited` — превышен лимит попыток (IP 30/60 с, покупатель 10/ч — этап 5.2.2).
+- `POST /store/orders/{id}/transfer/request` (Bearer покупателя; тело `{ "description": "..." (опц.), "update_order_email": bool (опц.) }`) → **200** `{ "order": … }`. Создает order change типа `transfer` (статус `requested`, токен-UUID внутри change-action), публикует событие `order.transfer_requested`; с этапа 5.2.3 токен доставляется **письмом на email заказа** через штатный Notification Module (провайдер `notification-smtp`, шаблон `order-transfer-request`, ссылка `/account/order-transfer?token=…&order_id=…` — см. [docs/notifications.md](notifications.md)); в API-ответе request токена нет (только письмо). Повторный request до завершения → **400** `invalid_data` `"Order (…) already has an active transfer request"` (проверено). **429** `rate_limited` — превышен лимит попыток (IP 30/60 с, покупатель 10/ч — этап 5.2.2).
 - `POST /store/orders/{id}/transfer/cancel` (Bearer инициатора) → 200 — отменяет transfer change (проверено).
 - `POST /store/orders/{id}/transfer/accept` — **без авторизации**, тело `{ "token": "<из письма>" }`; неверный токен → **400** `not_allowed` `"Invalid token."` (проверено).
 - `POST /store/orders/{id}/transfer/decline` — аналогично, по токену.
@@ -1742,8 +1742,17 @@ curl -X POST 'http://localhost:9000/auth/user/emailpass' \
 
 ## Что будет добавлено на следующих этапах
 
-- Этап 5 (продолжение): решения аудита 5.1 — конфигурация delivery для reset/transfer-токенов и rate limiting (маршруты этапа уже описаны выше, разделы 40–53).
+- Этап 5 (продолжение): 5.3 — интеграционные тесты авторизации и покупателей; 5.4 — приемка этапа.
 - Этап 6: платежные провайдеры ЮKassa/Т-Банк (webhooks, возвраты), расширенные способы доставки.
-- Этапы 9–10: группы Commerce Client/composables и страницы витрины (каталог, корзина, checkout, авторизация, личный кабинет).
+- Этапы 9–10: группы Commerce Client/composables и страницы витрины (каталог, корзина, checkout, авторизация, личный кабинет; страницы писем — `/reset-password`, `/account/order-transfer` — контракт ссылок в [docs/notifications.md](notifications.md)).
 
 Каждый новый модуль обязан сопровождаться разделом в этом файле.
+
+## Admin API: уведомления (штатный, этап 5.2.3)
+
+С этапа 5.2.3 в БД появляются строки уведомлений (штатный Notification Module); их читает штатный Admin API (только администраторы):
+
+- `GET /admin/notifications` (Bearer JWT администратора) — список уведомлений; фильтры `to`, `template`, `trigger_type`, `resource_id`, `channel`; поля по умолчанию включают `data` (в нем хранятся одноразовые токены, необходимые для отправки письма; Store API уведомления не раскрывает — см. «Ограничения безопасности» в [docs/notifications.md](notifications.md)).
+- `GET /admin/notifications/{id}` — одно уведомление.
+
+Витрина этот API не использует; публикуется здесь для полноты контракта этапа 5.2.3.

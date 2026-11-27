@@ -40,6 +40,23 @@ x-medusa-env: &medusa-env
   AUTH_RATE_LIMIT_TRANSFER_IP: ${AUTH_RATE_LIMIT_TRANSFER_IP:-30/60}
   AUTH_RATE_LIMIT_TRANSFER_ID: ${AUTH_RATE_LIMIT_TRANSFER_ID:-10/3600}
   AUTH_RATE_LIMIT_TRUST_PROXY: ${AUTH_RATE_LIMIT_TRUST_PROXY:-false}
+  # Этап 5.2.3: email-уведомления через штатный Notification Module
+  # (провайдер notification-smtp). NOTIFICATION_ENABLED=false выключает
+  # подписчиков и job повторной доставки; SMTP-credentials передаются ТОЛЬКО
+  # backend-контейнерам и никогда не попадают в storefront.
+  NOTIFICATION_ENABLED: ${NOTIFICATION_ENABLED:-true}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+  SMTP_FROM_NAME: ${SMTP_FROM_NAME:-}
+  # Расписание job-а повторной доставки неудачных писем (cron; пусто —
+  # раз в 5 минут), окно повторов — минуты (по умолчанию 15 ≈ TTL
+  # reset-токена). См. docs/notifications.md.
+  NOTIFICATION_RETRY_CRON: ${NOTIFICATION_RETRY_CRON:-*/5 * * * *}
+  NOTIFICATION_RETRY_WINDOW_MINUTES: ${NOTIFICATION_RETRY_WINDOW_MINUTES:-15}
 
 services:
   # ── Инфраструктура ────────────────────────────────────────────────
@@ -87,6 +104,33 @@ services:
       - meili_data:/meili_data
     healthcheck:
       test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:7700/health | grep -q available']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - ecommerce
+
+  # ── Email-тестирование (этап 5.2.3) ───────────────────────────────
+  # Mailpit — локальный SMTP-ящик для разработки и интеграционных тестов
+  # (перехватывает письма провайдера notification-smtp). Профиль mailpit:
+  # запускается только когда MAILPIT_ENABLED=true (make init/up/dev) и не
+  # разворачивается в production. Web UI слушает ТОЛЬКО loopback хоста;
+  # SMTP-порт наружу не публикуется (medusa пишет на mailpit:1025 внутри
+  # Docker-сети).
+  mailpit:
+    image: axllent/mailpit:v1.27.1
+    restart: unless-stopped
+    profiles: ['mailpit']
+    environment:
+      # Письма переживают рестарт контейнера (SQLite-файл в volume).
+      MP_DATA_FILE: /data/mailpit.db
+    volumes:
+      - mailpit_data:/data
+    ports:
+      - '127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:8025/api/v1/messages | grep -q total']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -211,6 +255,7 @@ services:
 volumes:
   postgres_data:
   meili_data:
+  mailpit_data:
 
 networks:
   ecommerce:

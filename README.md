@@ -13,6 +13,7 @@
 | PostgreSQL | 17.12 (alpine) | База данных |
 | Redis | 8.8.4 (alpine) | Сессии, кэш, шина событий, движок workflows |
 | Meilisearch | 1.58.0 | Полнотекстовый поиск и фасетная фильтрация (официальный Search Module Medusa) |
+| Mailpit | 1.27.1 | Локальный SMTP-ящик: email-уведомления в разработке и тестах (UI только на 127.0.0.1) |
 | Node.js (Docker) | 24.22.3 (alpine3.24) | Среда выполнения backend и storefront |
 | Tailwind CSS | 4.3.5 | Стили витрины |
 | pnpm | 12.23.0 | Менеджер пакетов (monorepo workspace) |
@@ -55,6 +56,7 @@ docker compose up -d --renew-anon-volumes --wait
 | Medusa API | <http://localhost:9000> | публичный |
 | Medusa Admin | <http://localhost:9000/app> | публичный (вход по паре из `.env`) |
 | Health check | <http://localhost:9000/health> | публичный |
+| Mailpit (email-тестирование) | <http://localhost:8025> | только 127.0.0.1 хоста (`MAILPIT_ENABLED=false` в production) |
 | PostgreSQL, Redis, Meilisearch | только внутри Docker-сети | наружу не публикуются |
 
 ## Доступ к Medusa Admin
@@ -96,9 +98,11 @@ make search-reconcile # сверка индекса с PostgreSQL, точечн�
 - **Характеристики товаров (модуль catalog_attributes)**: Admin API (CRUD, допустимые значения, привязки к категориям, значения товаров) и Medusa Admin UI — раздел «Характеристики», настройки фильтрации, виджет на карточке товара.
 - **Типизированный Commerce Client** (этап 2): `useCommerce()` поверх официального Medusa JS SDK — товары, категории, коллекции, регионы; региональные рассчитанные цены, пагинация, таймаут, отмена запросов, единая обработка ошибок.
 - **Composables**: `useStore()` — регионы, валюта, форматирование цен; обе SSR-совместимы.
-- **Корзина, checkout и заказы (этап 4)**: полный гостевой цикл работает на штатном Store API Medusa без собственных маршрутов — корзина, позиции, серверные цены и итоги, промокоды, доставка, платежные коллекции/сессии (`pp_system_default`), завершение → заказ, чтение заказа; завершение корзины сериализовано на backend (два одновременных запроса не создают дубликатов заказов); закрыт 157 автотестами (`make test`), практическое руководство — [docs/checkout.md](docs/checkout.md).
+- **Корзина, checkout и заказы (этап 4)**: полный гостевой цикл работает на штатном Store API Medusa без собственных маршрутов — корзина, позиции, серверные цены и итоги, промокоды, доставка, платежные коллекции/сессии (`pp_system_default`), завершение → заказ, чтение заказа; завершение корзины сериализовано на backend (два одновременных запроса не создают дубликатов заказов); практическое руководство — [docs/checkout.md](docs/checkout.md).
+- **Авторизация и покупатели (этап 5)**: регистрация/вход/JWT/сессии, профиль, адреса, claim корзины, история заказов и перенос гостевого заказа — штатные механизмы Medusa; серверная защита корзин/заказов и распределенный rate limiting маршрутов аутентификации (Redis + PostgreSQL, middleware).
+- **Email-уведомления (этап 5.2.3)**: доставка одноразовых токенов (сброс пароля, подтверждение переноса заказа) штатным Notification Module Medusa с SMTP-провайдером — письма на русском (HTML + plain text), идемпотентная доставка и повтор при сбое SMTP; локально — Mailpit (`http://localhost:8025`). Архитектура — [docs/notifications.md](docs/notifications.md).
 - Демо-страницы витрины (SSR): главная, `/catalog` (пагинация), `/product/:handle` (варианты, характеристики, 404 для отсутствующего товара).
-- Автотесты: 157 (unit + интеграционные на живых Medusa/Meilisearch, `make test`).
+- Автотесты: 177 (unit + интеграционные на живых Medusa/Meilisearch/Mailpit, `make test`).
 - Документированные API-маршруты: [docs/api.md](docs/api.md) + OpenAPI-спецификация собственных маршрутов: [docs/openapi.yaml](docs/openapi.yaml); поиск: [docs/search.md](docs/search.md); фильтры: [docs/filters.md](docs/filters.md); индексация: [docs/indexing.md](docs/indexing.md).
 
 ## Документация
@@ -108,6 +112,7 @@ make search-reconcile # сверка индекса с PostgreSQL, точечн�
 - [Архитектура](docs/ARCHITECTURE.md)
 - [API-справочник](docs/api.md) · [OpenAPI (поиск и характеристики)](docs/openapi.yaml)
 - [Поиск (Meilisearch)](docs/search.md)
+- [Email-уведомления](docs/notifications.md)
 - [Фасетная фильтрация и характеристики](docs/filters.md)
 - [Индексация каталога](docs/indexing.md)
 - [Commerce Client](docs/commerce-client.md)

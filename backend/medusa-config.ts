@@ -116,5 +116,42 @@ module.exports = defineConfig({
         },
       },
     },
+    // Штатный Notification Module Medusa (этап 5.2.3) с SMTP-провайдером:
+    // в Medusa 2.23 нет встроенного SMTP-провайдера (только local/sendgrid),
+    // поэтому провайдер реализует штатный контракт AbstractNotificationProvider
+    // Service. Доставка одноразовых токенов (сброс пароля, перенос заказа) —
+    // подписчики на события ядра + createNotifications; собственный сервис
+    // рассылок не создается. NOTIFICATION_ENABLED=false выключает подписчиков
+    // и job повторной доставки; SMTP-конфигурация — корневой .env (см.
+    // docs/notifications.md и docs/configuration.md).
+    ...(process.env.SMTP_HOST
+      ? [
+          {
+            resolve: "@medusajs/medusa/notification",
+            options: {
+              providers: [
+                {
+                  resolve: "./src/modules/notification-smtp/providers/smtp",
+                  id: "smtp",
+                  options: {
+                    channels: ["email"],
+                    host: process.env.SMTP_HOST,
+                    port: process.env.SMTP_PORT
+                      ? Number.parseInt(process.env.SMTP_PORT, 10)
+                      : 587,
+                    secure: process.env.SMTP_SECURE === "true",
+                    user: process.env.SMTP_USER || undefined,
+                    password: process.env.SMTP_PASSWORD || undefined,
+                    from_email: process.env.SMTP_FROM_EMAIL,
+                    from_name: process.env.SMTP_FROM_NAME || undefined,
+                    store_name: process.env.STORE_NAME,
+                    site_url: process.env.NUXT_PUBLIC_SITE_URL,
+                  },
+                },
+              ],
+            },
+          },
+        ]
+      : []),
   ],
 })

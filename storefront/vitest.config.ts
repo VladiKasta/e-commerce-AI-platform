@@ -17,5 +17,18 @@ export default defineConfig({
     // сверки намеренно повреждает и ремонтирует его — параллельные файлы
     // видели бы временные повреждения. Файлы выполняются последовательно.
     fileParallelism: false,
+    sequence: {
+      // Этап 5.2.3: тесты уведомлений используют те же маршруты аутентификации,
+      // что и store-auth-ratelimit, который СОЗНАТЕЛЬНО исчерпывает IP-бакеты
+      // rate limiting (30/60 с, скользящее окно; этап 5.2.2). Поэтому файл
+      // уведомлений выполняется первым — до ratelimit-спеки.
+      sortTestsFiles(files) {
+        const notifications = files.filter((file) =>
+          file.includes("store-auth-notifications")
+        )
+        const rest = files.filter((file) => !file.includes("store-auth-notifications"))
+        return [...notifications, ...rest]
+      },
+    },
   },
 })
