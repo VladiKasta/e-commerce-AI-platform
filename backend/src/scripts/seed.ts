@@ -717,13 +717,22 @@ export default async function seedStore({ container }: ExecArgs) {
     filters: { type: "publishable" },
   })
 
+  // Ключ витрины выбирается детерминированно: уже связанный с каналом
+  // витрины, иначе ключ с служебным заголовком, иначе первый publishable.
+  // Связи остальных publishable ключей seed не изменяет.
   let publishableKey:
     | {
         id: string
+        title: string
         token: string
         sales_channels?: Array<{ id: string } | null> | null
       }
-    | undefined = publishableKeys[0]
+    | undefined =
+      publishableKeys.find((key: { sales_channels?: Array<{ id: string } | null> | null }) =>
+        key.sales_channels?.some((channel) => channel?.id === salesChannel.id)
+      ) ??
+      publishableKeys.find((key: { title?: string }) => key.title === API_KEY_TITLE) ??
+      publishableKeys[0]
 
   if (!publishableKey) {
     const { result } = await createApiKeysWorkflow(container).run({
@@ -745,11 +754,21 @@ export default async function seedStore({ container }: ExecArgs) {
       ?.map((channel) => channel?.id)
       .filter((id): id is string => Boolean(id)) ?? []
 
-  if (!linkedChannelIds.includes(salesChannel.id)) {
+  // Ключ витрины должен быть связан только с каналом витрины: Medusa
+  // требует явный sales_channel_id при создании корзины, если ключ
+  // связан с несколькими каналами (аудит этапа 4.1). Сами каналы и их
+  // связи с товарами/складами не затрагиваются.
+  const addChannels = linkedChannelIds.includes(salesChannel.id)
+    ? []
+    : [salesChannel.id]
+  const removeChannels = linkedChannelIds.filter((id) => id !== salesChannel.id)
+
+  if (addChannels.length || removeChannels.length) {
     await linkSalesChannelsToApiKeyWorkflow(container).run({
       input: {
         id: publishableKey.id,
-        add: [salesChannel.id],
+        ...(addChannels.length ? { add: addChannels } : {}),
+        ...(removeChannels.length ? { remove: removeChannels } : {}),
       },
     })
   }

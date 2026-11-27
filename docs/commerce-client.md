@@ -156,13 +156,13 @@ await commerce.products.list({ signal: controller.signal, timeoutMs: 5_000 })
 1. **Новые группы** добавляются в `CommerceClient` (интерфейс в `shared/types/commerce.ts`, реализация в `createCommerceClient`): `commerce.cart`, `commerce.auth`, `commerce.customer`, `commerce.orders` и т.д. — по мере выхода соответствующих этапов ROADMAP. Не создавать пустых групп-заглушек.
 2. **Новый метод** = путь Medusa + официальный `HttpTypes` тип + `request()`-обертка (она уже дает таймаут/отмену/нормализацию ошибок). Например:
    ```ts
-   // в createCommerceClient, группа cart (этап 6):
+   // в createCommerceClient, группа cart (этап 9):
    create: (body, params = {}) => {
      const { init, timeoutMs, query } = splitOptions(params)
      return request<HttpTypes.StoreCartResponse>("/store/carts", { ...init, method: "POST", body, query }, timeoutMs)
    }
    ```
-3. **Авторизационный контекст** (этап 7): SDK уже поддерживает JWT/session (`Medusa` constructor `auth`-опции); при появлении пользовательских сессий инстанс клиента останется прежним, добавится управление токеном (серверные cookies — через Nitro-маршруты, которые импортируют ту же фабрику из `shared/`).
+3. **Авторизационный контекст** (этапы 5/9): SDK уже поддерживает JWT/session (`Medusa` constructor `auth`-опции); при появлении пользовательских сессий инстанс клиента останется прежним, добавится управление токеном (серверные cookies — через Nitro-маршруты, которые импортируют ту же фабрику из `shared/`).
 4. **Никаких** собственных repository/factory/adapter-слоев поверх фасада: один фасад, один транспорт.
 5. Изменение контракта любого маршрута — обновить `docs/api.md` в том же изменении.
 

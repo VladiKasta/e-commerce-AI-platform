@@ -182,4 +182,4 @@ GET /store/catalog?category=t-shirts&filter[brand]=urban-basic&in_stock=true&pri
 
 **Сценарий 5 — категория × валютный контекст**: `region_id` (проверка региона на backend, валюта наследуется) определяет валюту фасета price и выдаваемую цену; без региона — регион по умолчанию (валюта магазина).
 
-Композаблы витрины Nuxt (этап 4) построятся поверх тех же маршрутов; типизированные контракты ответов — `backend/src/types/catalog.ts` (зеркало для витрины — `storefront/shared/types/catalog.ts`).
+Композаблы витрины Nuxt (этап 9) построятся поверх тех же маршрутов; типизированные контракты ответов — `backend/src/types/catalog.ts` (зеркало для витрины — `storefront/shared/types/catalog.ts`).

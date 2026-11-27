@@ -44,7 +44,7 @@
 | `MEDUSA_PORT` | `9000` | да | вручную | private | Порт Medusa (API + Admin + `/health`). Если меняете — обновите также `MEDUSA_INTERNAL_URL`, `MEDUSA_PUBLIC_URL` и CORS. |
 | `MEDUSA_INTERNAL_URL` | `http://medusa:9000` | да | вручную | private | Внутренний Docker-URL Medusa для серверной стороны Nuxt (`NUXT_MEDUSA_URL`). |
 | `MEDUSA_PUBLIC_URL` | `http://localhost:9000` | да | вручную | — | Публичный URL Medusa для документации и curl-примеров. |
-| `MEDUSA_PUBLISHABLE_KEY` | — | нет | [seed] | public | Publishable API key Store API. Создается seed-скриптом и записывается в `.env`; не секрет. Пустое значение допустимо только до первой инициализации. |
+| `MEDUSA_PUBLISHABLE_KEY` | — | нет | [seed] | public | Publishable API key Store API. Создается seed-скриптом и записывается в `.env`; не секрет. Пустое значение допустимо только до первой инициализации. Seed привязывает ключ витрины **только** к каналу «Веб-витрина» (штатный `linkSalesChannelsToApiKeyWorkflow`, add/remove) — без этого Medusa требует явный `sales_channel_id` при создании корзины. Повторные запуски идемпотентны; новые ключи не создаются, publishable-ключи без привязки к витрине не изменяются. |
 | `JWT_SECRET` | — | да | [auto] | private | Секрет JWT Medusa (hex, 64 символа). Значение `supersecret` отклоняется валидатором. |
 | `COOKIE_SECRET` | — | да | [auto] | private | Секрет cookies Medusa (hex, 64 символа). |
 | `STORE_CORS` | `http://localhost:3000` | да | вручную | private | Разрешенные origins для Store API (через запятую, без слэша в конце). |

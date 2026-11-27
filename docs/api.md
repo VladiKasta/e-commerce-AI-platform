@@ -56,6 +56,20 @@
 - [Регионы](#регионы)
   - [Список регионов](#8-список-регионов)
   - [Регион по ID](#9-регион-по-id)
+- [Корзина, checkout и заказы (аудит этапа 4)](#корзина-checkout-и-заказы-аудит-этапа-4)
+  - [28. Создание корзины](#28-создание-корзины)
+  - [29. Получение и обновление корзины](#29-получение-и-обновление-корзины)
+  - [30. Позиции: добавление](#30-позиции-добавление)
+  - [31. Позиции: изменение количества](#31-позиции-изменение-количества)
+  - [32. Позиции: удаление](#32-позиции-удаление)
+  - [33. Промокоды](#33-промокоды)
+  - [34. Способы доставки: список](#34-способы-доставки-список)
+  - [35. Способ доставки корзины](#35-способ-доставки-корзины)
+  - [36. Пересчет налогов](#36-пересчет-налогов)
+  - [37. Платежные коллекции и сессии](#37-платежные-коллекции-и-сессии)
+  - [38. Завершение корзины (complete)](#38-завершение-корзины-complete)
+  - [39. Заказ по ID](#39-заказ-по-id)
+  - [Безопасность (проверено)](#безопасность-корзины-и-заказов-проверено)
 - [Nuxt Server API](#nuxt-server-api)
   - [Health check витрины](#10-health-check-витрины)
 - [Справочно: аутентификация администратора](#11-аутентификация-администратора-справочно)
@@ -352,7 +366,7 @@ curl "http://localhost:9000/store/products?handle=futbolka-meduza&region_id=reg_
 
 | | |
 |---|---|
-| **Назначение** | Категории каталога (навигация, каталог по категориям — этап 5) |
+| **Назначение** | Категории каталога (навигация, каталог по категориям — этапы 9–10) |
 | **Метод** | `GET` |
 | **URL** | `/store/product-categories` |
 | **Принадлежность** | Medusa Store API |
@@ -1084,6 +1098,232 @@ HTTP 404
 
 ---
 
+## Корзина, checkout и заказы (аудит этапа 4)
+
+Все маршруты раздела — **штатный Store API Medusa 2.23.0**; собственных маршрутов этап не создает. Проверено реальными HTTP-запросами на живом окружении 27.11.2026 (подэтап 4.1 — аудит штатного Cart API): полный гостевой цикл от создания корзины до заказа. Результаты аудита и решения — [PROGRESS.md](PROGRESS.md).
+
+Ключевые свойства (проверено фактически):
+
+- **Корзина гостя** не требует авторизации: адресуется непредсказуемым id (`cart_…`), доступ — publishable API key + id.
+- **Цены и итоги считает сервер**: `unit_price` позиции берется из прайс-листа региона и совпадает с `calculated_price` каталога; денежные поля в payload не принимаются.
+- **Наличие проверяется сервером** при добавлении и изменении количества.
+- **Промокоды**: применяются только активные промоушены (`status: "active"`); промоушен, созданный через Admin API без явного `status`, находится в `draft` и скидку не дает.
+- **Платеж**: провайдер `pp_system_default` доступен из коробки; payment collection создается явно; отдельного store-маршрута авторизации платежной сессии в 2.23 нет — авторизация системного провайдера происходит при завершении корзины (`order.payment_status = "authorized"`, проверено через Admin API).
+- **Особенность totals**: `subtotal` корзины и заказа **включает доставку** (`subtotal = item_subtotal + shipping_subtotal`); «итог без доставки» — поле `item_subtotal`.
+- **Sales channel**: seed связывает ключ витрины только с каналом «Веб-витрина» (задача 4.2, 27.11.2026) — `sales_channel_id` в теле создания корзины можно не передавать. Поведение Medusa при ключе с несколькими каналами сохраняется: без явного `sales_channel_id` — 400.
+
+### 28. Создание корзины
+
+| | |
+|---|---|
+| **Назначение** | Создание гостевой корзины (контекст: регион, валюта, канал продаж) |
+| **Метод** | `POST` |
+| **URL** | `/store/carts` |
+| **Принадлежность** | Medusa Store API |
+| **Авторизация** | Publishable API key |
+
+Тело: `{ "region_id": "reg_…" }`. `sales_channel_id` передавать не требуется: ключ витрины связан только с каналом «Веб-витрина», Medusa подставляет его из publishable API key (ключ с несколькими каналами потребовал бы явный `sales_channel_id` — 400).
+
+```bash
+curl -X POST "http://localhost:9000/store/carts" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" -H "Content-Type: application/json" \
+  --data-raw '{"region_id":"reg_01M87JXH28ZWDP5S4FJTY79RPF"}'
+```
+
+Пример ответа (200 OK, реальный, сокращено):
+
+```json
+{
+  "cart": {
+    "id": "cart_01M8EM2ZZ51P5ZYCC7NSWYH4P9",
+    "currency_code": "rub",
+    "region_id": "reg_01M87JXH28ZWDP5S4FJTY79RPF",
+    "sales_channel_id": "sc_01M87JXH172AS6PG13N2QSWNPG",
+    "email": null,
+    "items": [],
+    "subtotal": 0, "discount_total": 0, "shipping_total": 0, "tax_total": 0, "total": 0
+  }
+}
+```
+
+`sales_channel_id` в ответе — канал из publishable API key (проверено 27.11.2026 после задачи 4.2). Возможные коды: 200; 400 `not_allowed` — «key has multiple associated sales channels» (для ключей с несколькими каналами без явного `sales_channel_id`) или проблема ключа; 400 `invalid_data` — несуществующий регион.
+
+### 29. Получение и обновление корзины
+
+`GET /store/carts/{id}` — дефолтный ответ уже содержит `items`, адреса и полный набор totals (`item_subtotal`, `discount_total`, `shipping_total`, `tax_total`, `original_total` и др.).
+
+`POST /store/carts/{id}` — обновление: `email`, `shipping_address`, `region_id`, `sales_channel_id`, `metadata`, `customer_id` (после этапа 5). Адрес передается объектом (`first_name`, `last_name`, `address_1`, `city`, `country_code`, `postal_code`, `phone`).
+
+```bash
+curl -X POST "http://localhost:9000/store/carts/cart_01M8EJM9QSQ571G9WXJFP228R1" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" -H "Content-Type: application/json" \
+  --data-raw '{"email":"guest@example.com","shipping_address":{"first_name":"Иван","last_name":"Гость","address_1":"ул. Тестовая, 1","city":"Москва","country_code":"ru","postal_code":"101000","phone":"+7 999 000-00-00"}}'
+```
+
+Ответ — 200 с обновленной корзиной (`email` заполнен, `shipping_address` сохранен — проверено). Возможные коды: 200; 400 (невалидное тело); 404 `not_found` (`Cart with id 'null' not found`).
+
+### 30. Позиции: добавление
+
+`POST /store/carts/{id}/line-items` — тело `{ "variant_id": "variant_…", "quantity": 2 }`.
+
+```bash
+curl -X POST "http://localhost:9000/store/carts/cart_01M8EJM9QSQ571G9WXJFP228R1/line-items" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" -H "Content-Type: application/json" \
+  --data-raw '{"variant_id":"variant_01M87JXH78C4ESGHPEMMCBHZWA","quantity":2}'
+```
+
+Пример ответа (200 OK, реальный): позиция с серверной ценой и пересчитанными totals корзины:
+
+```json
+{
+  "cart": {
+    "items": [
+      { "id": "cali_01M8EJM9XD1RK1JFRBNQTYPM2B", "variant_id": "variant_01M87JXH78C4ESGHPEMMCBHZWA",
+        "title": "Худи «Полярное»", "quantity": 2, "unit_price": 4590, "requires_shipping": true }
+    ],
+    "subtotal": 9180, "discount_total": 0, "shipping_total": 0, "tax_total": 0, "total": 9180
+  }
+}
+```
+
+`unit_price` (4590) равен `calculated_price.calculated_amount` каталога — цена назначается сервером.
+
+Возможные коды: 200; 400 `insufficient_inventory` (`"Some variant does not have the required inventory"` — проверено на варианте с нулевым остатком); 400 `invalid_data` — посторонние поля (`unit_price` → `"Unrecognized fields: 'unit_price'"`) или `quantity < 1`.
+
+### 31. Позиции: изменение количества
+
+`POST /store/carts/{id}/line-items/{line_id}` — тело `{ "quantity": 3 }`. Ответ — 200 с обновленной корзиной (`total: 13770` при 3 × 4590 — проверено). Проверки наличия выполняются и здесь. Возможные коды: 200; 400 (`invalid_data`, `insufficient_inventory`); 404.
+
+### 32. Позиции: удаление
+
+`DELETE /store/carts/{id}/line-items/{line_id}` — ответ (200 OK, реальный):
+
+```json
+{ "id": "cali_01M8EJM9XD1RK1JFRBNQTYPM2B", "object": "line-item", "deleted": true,
+  "parent": { "id": "cart_01M8EJM9QSQ571G9WXJFP228R1", "total": 0 } }
+```
+
+Корзина возвращается в поле `parent`. Возможные коды: 200; 404.
+
+### 33. Промокоды
+
+`POST /store/carts/{id}/promotions` — тело `{ "promo_codes": ["AUDIT10"] }` (массив). Снятие — `DELETE /store/carts/{id}/promotions` с тем же телом.
+
+Проверено на живом промоушене (создан Admin API: `type: "standard"`, `application_method: {type: "percentage", value: 10, target_type: "items", allocation: "each", max_quantity: 5}`, `status: "active"` — `allocation: "each"` требует `max_quantity`, без него Admin API отвечает 400):
+
+```json
+{
+  "cart": {
+    "promotions": [{ "code": "AUDIT10", "status": "active" }],
+    "items": [
+      { "quantity": 2, "unit_price": 4590, "subtotal": 9180, "discount_total": 918, "total": 8262,
+        "adjustments": [{ "code": "AUDIT10", "amount": 918 }] }
+    ],
+    "subtotal": 9180, "discount_total": 918, "total": 8262
+  }
+}
+```
+
+Особенности (проверено): несуществующий код → 400 `invalid_data` (`"The promotion code NO_SUCH_CODE is invalid"`); **`draft`-промоушен** принимается молча (200), но не привязывается и скидку не дает; снятие не примененного кода → 200 (идемпотентно).
+
+### 34. Способы доставки: список
+
+`GET /store/shipping-options?cart_id={cart_id}` — опции, доступные корзине (регион + shipping profile + провайдер).
+
+```json
+{
+  "shipping_options": [
+    { "id": "so_01M87JXH3WV1Q4QVEMWDGANTAT", "name": "Стандартная доставка", "amount": 500, "provider_id": "manual_manual" },
+    { "id": "so_01M87JXH3WM9ZVK4ZR3YAXSZN4", "name": "Экспресс-доставка", "amount": 990, "provider_id": "manual_manual" }
+  ]
+}
+```
+
+Обе опции создаются seed; провайдер — штатный `manual_manual` (единственный включенный fulfillment provider). Возможные коды: 200; 400.
+
+### 35. Способ доставки корзины
+
+`POST /store/carts/{id}/shipping-methods` — тело `{ "option_id": "so_…" }`. Ответ — 200 с пересчитанными totals (`shipping_total: 500`, `total` вырос на сумму доставки — проверено). Возможные коды: 200; 400; 404.
+
+### 36. Пересчет налогов
+
+`POST /store/carts/{id}/taxes` — принудительный пересчет налоговых ставок корзины (тело `{}`); актуален для регионов с настроенными tax rates. Для завершенной корзины — 400 (`"Cart … is already completed"`). Возможные коды: 200; 400.
+
+### 37. Платежные коллекции и сессии
+
+Доступные провайдеры региона: `GET /store/payment-providers?region_id={region_id}` → `{"payment_providers":[{"id":"pp_system_default","is_enabled":true}]}` (провайдер доступен из коробки, без конфигурации).
+
+Создание collection для корзины (явное; авто-создания при добавлении доставки нет — проверено):
+
+```bash
+curl -X POST "http://localhost:9000/store/payment-collections" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" -H "Content-Type: application/json" \
+  --data-raw '{"cart_id":"cart_01M8EJPQ4RNBYM7WSJTPMCY6D5"}'
+```
+
+Ответ (200): `{"payment_collection":{"id":"pay_col_01M8EJNQ74V9EQDZ4HVDTME4YY","currency_code":"rub","amount":9680,"payment_sessions":[]}}` — `amount` равен `total` корзины на момент создания.
+
+Сессия: `POST /store/payment-collections/{id}/payment-sessions` — тело `{ "provider_id": "pp_system_default" }`:
+
+```json
+{ "payment_collection": { "id": "pay_col_…", "amount": 9680,
+  "payment_sessions": [ { "id": "payses_01M8EJNQ8HN1JC1MSCQJC048SR", "provider_id": "pp_system_default", "status": "pending", "amount": 9680 } ] } }
+```
+
+Ограничения 2.23 (проверено): маршрутов `GET /store/payment-collections/{id}` и авторизации сессии (`…/payment-sessions/{id}/authorize`) в Store API **нет** (404); состояние collection читается через корзину (`GET /store/carts/{id}?fields=+payment_collection,*payment_collection.payment_sessions`); авторизация `pp_system_default` происходит неявно при завершении корзины.
+
+Возможные коды: 200; 400; 404.
+
+### 38. Завершение корзины (complete)
+
+`POST /store/carts/{id}/complete` — тело `{}`. Ответ — заказ:
+
+```json
+{
+  "type": "order",
+  "order": {
+    "id": "order_01M8EJNQB9XP37Q8FZKZ8SCECY",
+    "display_id": 1,
+    "status": "pending",
+    "email": "guest@example.com",
+    "currency_code": "rub",
+    "subtotal": 9680, "discount_total": 0, "shipping_total": 500, "tax_total": 0, "total": 9680,
+    "customer_id": null,
+    "items": [ { "title": "Худи «Полярное»", "quantity": 2, "unit_price": 4590, "subtotal": 9180, "total": 9180 } ]
+  }
+}
+```
+
+Со скидкой (реальный заказ с промокодом AUDIT10 и экспресс-доставкой): `subtotal: 10170` (9180 + 990), `discount_total: 918`, `shipping_total: 990`, `total: 9252` — все суммы серверные.
+
+Серверные требования (проверено изоляцией): payment collection с сессией; способ доставки, если позиции `requires_shipping` (без них — 400). **Email сервером не требуется** — заказ создается и без него (проверено, display_id 3); сбор email — ответственность витрины.
+
+Возможные коды: 200 (`{"type":"order"}`); 400 `invalid_data`: `"Payment collection has not been initiated for cart"` / `"Payment sessions are required to complete cart"` / `"No shipping method selected but the cart contains items that require shipping."`; повторный complete завершенной корзины → 400.
+
+### 39. Заказ по ID
+
+`GET /store/orders/{id}` — чтение заказа гостя по id (publishable API key без пользовательской авторизации — модель «непредсказуемый id», как у корзин):
+
+```bash
+curl "http://localhost:9000/store/orders/order_01M8EJNQB9XP37Q8FZKZ8SCECY" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY"
+```
+
+Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","summary":{"paid_total":0,…}}}`; `payment_status` заказа — `authorized` (проверено через Admin API). Существуют также маршруты переноса заказа покупателю (`/store/orders/{id}/transfer/*`) — этап 5. Возможные коды: 200; 404.
+
+### Безопасность корзины и заказов (проверено)
+
+| Проверка | Результат |
+|---|---|
+| Любой `/store/*` без publishable key | 400 `not_allowed` |
+| Подмена цены (`unit_price` в payload) | 400 `invalid_data` «Unrecognized fields» — цена назначается только сервером |
+| Отрицательное/нулевое количество | 400 `invalid_data` |
+| Вариант с нулевым остатком | 400 `insufficient_inventory` |
+| Доступ к чужой корзине/гостевому заказу | Возможен по непредсказуемому id (`cart_…`/`order_…`, ULID) без дополнительной авторизации — модель безопасности Medusa для гостей; id не должен раскрываться третьим сторонам (хранение id на витрине — этапы 9–10) |
+| Итоги, скидки, наличие | Вычисляются только сервером |
+
+---
+
 ## Nuxt Server API
 
 Единственный серверный маршрут витрины. Stage 2 не добавляет новых: Commerce Client работает с Medusa напрямую (серверная сторона — по внутренней Docker-сети, браузер — по публичному URL), а серверные proxy-маршруты не требуются (KISS, см. [docs/commerce-client.md](commerce-client.md)).
@@ -1171,11 +1411,35 @@ curl -X POST 'http://localhost:9000/auth/user/emailpass' \
    характеристики (options + values) рендерятся на сервере.
 ```
 
+### Гостевой checkout (проверенная последовательность, этап 4)
+
+```text
+ 1. GET  /store/regions                                            → регион/валюта
+ 2. POST /store/carts {region_id}                                   → корзина (канал из publishable key)
+ 3. POST /store/carts/:id/line-items {variant_id, quantity} (×N)   → позиции, серверные цены
+ 4. POST /store/carts/:id/line-items/:line_id {quantity}            → изменение количества
+    DELETE /store/carts/:id/line-items/:line_id                     → удаление позиции
+ 5. POST /store/carts/:id {email, shipping_address}                 → контактные данные и адрес
+ 6. POST /store/carts/:id/promotions {promo_codes:[...]}            → скидка (активные промоушены)
+ 7. GET  /store/shipping-options?cart_id=:id                       → доступные способы доставки
+    POST /store/carts/:id/shipping-methods {option_id}              → выбранная доставка
+ 8. GET  /store/payment-providers?region_id=:region                → pp_system_default
+    POST /store/payment-collections {cart_id}                       → collection (amount = total)
+    POST /store/payment-collections/:pc/payment-sessions
+         {provider_id:"pp_system_default"}                          → сессия (pending)
+ 9. POST /store/carts/:id/complete                                  → {type:"order", order}
+    (авторизация pp_system_default происходит здесь)
+10. GET  /store/orders/:order_id                                   → подтверждение заказа
+```
+
+Серверные требования complete: payment collection с сессией и способ доставки для позиций `requires_shipping`; email обязателен только на уровне витрины (шаг 5 рекомендуется выполнять до создания payment collection, чтобы сумма платежа соответствовала финальной корзине).
+
 ---
 
 ## Что будет добавлено на следующих этапах
 
-- Этап 6: корзина, доставка, checkout (`/store/carts*`, `/store/checkout-*`, payment providers).
-- Этап 7: авторизация покупателя (`/auth/customer/*`, `/store/customers/*`, `/store/orders*`).
+- Этап 5: авторизация и покупатели (`/auth/customer/*`, `/store/customers/*`, заказы покупателя, перенос заказа `/store/orders/:id/transfer/*`).
+- Этап 6: платежные провайдеры ЮKassa/Т-Банк (webhooks, возвраты), расширенные способы доставки.
+- Этапы 9–10: группы Commerce Client/composables и страницы витрины (каталог, корзина, checkout, личный кабинет).
 
 Каждый новый модуль обязан сопровождаться разделом в этом файле.
