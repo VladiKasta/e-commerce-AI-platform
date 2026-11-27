@@ -1,4 +1,5 @@
 import {
+  authenticate,
   defineMiddlewares,
   validateAndTransformBody,
   validateAndTransformQuery,
@@ -14,6 +15,11 @@ import {
   AdminUpdateCatalogAttribute,
 } from "./admin/catalog-attributes/validators"
 import { serializeCartCompletion } from "./middlewares/cart-completion"
+import { guardCartAccess, guardCartClaim } from "./middlewares/cart-access"
+import {
+  ensureOrderAccess,
+  ensureTransferInitiator,
+} from "./middlewares/order-access"
 
 /**
  * Валидация Admin API характеристик каталога — штатные middleware
@@ -33,6 +39,62 @@ export default defineMiddlewares({
       methods: ["POST"],
       matcher: "/store/carts/:id/complete",
       middlewares: [serializeCartCompletion],
+    },
+    // Этап 5.2.1: защита корзин покупателей. Гостевые корзины работают по
+    // модели Medusa (id = секрет); авторизованная корзина доступна только
+    // владельцу — чтение/изменение/завершение чужой дают контролируемый
+    // 404 (неотличимый от несуществующей корзины). Claim проверяет
+    // принадлежность ПОД тем же advisory-локом, что и complete (4.5),
+    // и повторяет проверку после захвата лока: конкурентные claim/claim
+    // и claim/complete сериализуются, повторный claim своей корзины
+    // идемпотентен, присвоение чужой — 404.
+    {
+      matcher: "/store/carts/:id/{*splat}",
+      middlewares: [guardCartAccess],
+    },
+    // Явный базовый путь (на случай, если {*splat} не покрывает `/store/carts/:id`
+    // без вложенности): дублирование middleware безвредно — проверка идемпотентна.
+    {
+      matcher: "/store/carts/:id",
+      middlewares: [guardCartAccess],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/store/carts/:id/customer",
+      middlewares: [guardCartClaim],
+    },
+    // Этап 5.2.1: защита заказов (по официальному гайду Medusa
+    // «Restrict Order Retrieval»): authenticate с allowUnauthenticated
+    // заполняет auth_context, когда credentials есть, а доступ решает
+    // ensureOrderAccess — свои заказы по авторизации; гостевой заказ —
+    // только по подтвержденному праву (заголовок x-cart-id c id корзины
+    // заказа, link order_cart); прочие запросы — контролируемый 404 без
+    // раскрытия данных. Гостевой checkout не затрагивается: complete
+    // возвращает заказ напрямую (proof нужен только для повторного
+    // чтения GET /store/orders/:id).
+    {
+      method: ["GET"],
+      matcher: "/store/orders/:id",
+      middlewares: [
+        authenticate("customer", ["session", "bearer"], {
+          allowUnauthenticated: true,
+        }),
+        ensureOrderAccess,
+      ],
+    },
+    // Transfer: инициатор request/cancel — только покупатель с email,
+    // совпадающим с email заказа (легитимная семантика переноса гостевого
+    // заказа); чужой покупатель получает 404 без данных. Accept/decline
+    // остаются штатными (подтверждение — одноразовый токен на email заказа).
+    {
+      methods: ["POST"],
+      matcher: "/store/orders/:id/transfer/request",
+      middlewares: [ensureTransferInitiator],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/store/orders/:id/transfer/cancel",
+      middlewares: [ensureTransferInitiator],
     },
     // Характеристики: список / создание / редактирование
     {

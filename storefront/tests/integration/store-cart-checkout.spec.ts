@@ -160,16 +160,24 @@ async function rawFetch<T>(
 
 function storeFetch<T>(
   path: string,
-  init?: { method?: string; body?: unknown; key?: string | null }
+  init?: {
+    method?: string
+    body?: unknown
+    key?: string | null
+    /** 5.2.1: подтвержденное право на гостевой заказ (docs/api.md №52). */
+    guestProof?: string
+  }
 ): Promise<ApiResult<T>> {
   const key = init?.key === undefined ? publishableKey : init.key
+  const headers: Record<string, string> =
+    key === null ? {} : { "x-publishable-api-key": key }
+  if (init?.guestProof) {
+    headers["x-cart-id"] = init.guestProof
+  }
   return rawFetch<T>(path, {
     method: init?.method,
     body: init?.body,
-    headers:
-      key === null
-        ? {}
-        : { "x-publishable-api-key": key },
+    headers,
   })
 }
 
@@ -772,8 +780,12 @@ describe("Полный гостевой checkout: complete → заказ", () =
   it(
     "заказ читается по id: статус и payment_status authorized",
     async () => {
+      // 5.2.1: голый order_id больше не авторизация — гостевой заказ
+      // читается по подтвержденному праву (заголовок x-cart-id с id
+      // корзины, из которой оформлен заказ; см. docs/api.md, маршрут 52).
       const res = await storeFetch<{ order: Order }>(
-        `/store/orders/${orderId}`
+        `/store/orders/${orderId}`,
+        { guestProof: cartId }
       )
 
       expect(res.status).toBe(200)
@@ -785,6 +797,19 @@ describe("Полный гостевой checkout: complete → заказ", () =
       expect(order.payment_status).toBe("authorized")
       expect(order.total).toBe(variantUnitPrice * 3 + 500)
       expect(order.email).toBe(EMAIL)
+    },
+    20_000
+  )
+
+  it(
+    "гостевой заказ недоступен по id без подтвержденного права (5.2.1)",
+    async () => {
+      const res = await storeFetch(`/store/orders/${orderId}`)
+      expect(res.status).toBe(404)
+      const wrongProof = await storeFetch(`/store/orders/${orderId}`, {
+        guestProof: "cart_01M8WRONGPROOF",
+      })
+      expect(wrongProof.status).toBe(404)
     },
     20_000
   )

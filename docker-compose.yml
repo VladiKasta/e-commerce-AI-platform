@@ -42,7 +42,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -54,7 +54,7 @@ services:
     image: redis:8.8.4-alpine
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -67,12 +67,12 @@ services:
     restart: unless-stopped
     environment:
       MEILI_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:?MEILISEARCH_MASTER_KEY не задан в .env}
-      MEILI_NO_ANALYTICS: "true"
+      MEILI_NO_ANALYTICS: 'true'
       MEILI_ENV: development
     volumes:
       - meili_data:/meili_data
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:7700/health | grep -q available"]
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:7700/health | grep -q available']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -88,7 +88,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    restart: "no"
+    restart: 'no'
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,7 +108,7 @@ services:
       # Анонимные тома сохраняют node_modules образа при bind-mount.
       - /server/node_modules
       - /server/backend/node_modules
-    command: ["sh", "/server/infrastructure/scripts/init.sh", "full"]
+    command: ['sh', '/server/infrastructure/scripts/init.sh', 'full']
     networks:
       - ecommerce
 
@@ -131,19 +131,19 @@ services:
       PORT: ${MEDUSA_PORT:-9000}
       NUXT_PUBLIC_SITE_URL: ${NUXT_PUBLIC_SITE_URL:-http://localhost:3000}
     ports:
-      - "${MEDUSA_PORT:-9000}:${MEDUSA_PORT:-9000}"
+      - '${MEDUSA_PORT:-9000}:${MEDUSA_PORT:-9000}'
       # Dev-сервер Medusa Admin (HMR) в режиме `medusa develop`.
-      - "5173:5173"
+      - '5173:5173'
     volumes:
       - ./backend:/server/backend
       - /server/backend/node_modules
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${MEDUSA_PORT:-9000}/health || exit 1"]
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:${MEDUSA_PORT:-9000}/health || exit 1']
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 120s
-    command: ["pnpm", "run", "dev"]
+    command: ['pnpm', 'run', 'dev']
     networks:
       - ecommerce
 
@@ -171,7 +171,7 @@ services:
       NUXT_PUBLIC_STORE_LOCALE: ${STORE_LOCALE}
       NUXT_PUBLIC_STORE_CURRENCY: ${STORE_CURRENCY}
     ports:
-      - "${NUXT_PORT:-3000}:${NUXT_PORT:-3000}"
+      - '${NUXT_PORT:-3000}:${NUXT_PORT:-3000}'
     volumes:
       - ./storefront:/server/storefront
       # Этап 3.6.3: read-only исходники репозитория для unit-тестов
@@ -185,12 +185,12 @@ services:
       - /server/storefront/node_modules
       - /server/storefront/.output
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${NUXT_PORT:-3000}/api/health || exit 1"]
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:${NUXT_PORT:-3000}/api/health || exit 1']
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 60s
-    command: ["pnpm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "${NUXT_PORT:-3000}"]
+    command: ['pnpm', 'run', 'dev', '--', '--host', '0.0.0.0', '--port', '${NUXT_PORT:-3000}']
     networks:
       - ecommerce
 

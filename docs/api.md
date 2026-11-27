@@ -70,6 +70,22 @@
   - [38. Завершение корзины (complete)](#38-завершение-корзины-complete)
   - [39. Заказ по ID](#39-заказ-по-id)
   - [Безопасность (проверено)](#безопасность-корзины-и-заказов-проверено)
+- [Авторизация и покупатели (аудит этапа 5)](#авторизация-и-покупатели-аудит-этапа-5)
+  - [40. Регистрация покупателя: auth identity](#40-регистрация-покупателя-auth-identity)
+  - [41. Регистрация покупателя: профиль](#41-регистрация-покупателя-профиль)
+  - [42. Вход (JWT)](#42-вход-jwt)
+  - [43. Сессия: обмен токена и выход](#43-сессия-обмен-токена-и-выход)
+  - [44. Обновление JWT](#44-обновление-jwt)
+  - [45. Сброс пароля: запрос токена](#45-сброс-пароля-запрос-токена)
+  - [46. Смена пароля](#46-смена-пароля)
+  - [47. Текущий покупатель](#47-текущий-покупатель)
+  - [48. Изменение профиля](#48-изменение-профиля)
+  - [49. Адреса покупателя](#49-адреса-покупателя)
+  - [50. Привязка корзины к покупателю (claim)](#50-привязка-корзины-к-покупателю-claim)
+  - [51. История заказов покупателя](#51-история-заказов-покупателя)
+  - [52. Заказ по ID и авторизованные заказы](#52-заказ-по-id-и-авторизованные-заказы)
+  - [53. Перенос гостевого заказа (transfer)](#53-перенос-гостевого-заказа-transfer)
+  - [Безопасность авторизации и покупателей (проверено)](#безопасность-авторизации-и-покупателей-проверено)
 - [Nuxt Server API](#nuxt-server-api)
   - [Health check витрины](#10-health-check-витрины)
 - [Справочно: аутентификация администратора](#11-аутентификация-администратора-справочно)
@@ -1153,7 +1169,7 @@ curl -X POST "http://localhost:9000/store/carts" \
 
 `GET /store/carts/{id}` — дефолтный ответ уже содержит `items`, адреса и полный набор totals (`item_subtotal`, `discount_total`, `shipping_total`, `tax_total`, `original_total` и др.).
 
-`POST /store/carts/{id}` — обновление: `email`, `shipping_address`, `region_id`, `sales_channel_id`, `metadata`, `customer_id` (после этапа 5). Адрес передается объектом (`first_name`, `last_name`, `address_1`, `city`, `country_code`, `postal_code`, `phone`).
+`POST /store/carts/{id}` — обновление: `email`, `shipping_address`, `region_id`, `sales_channel_id`, `metadata`. Привязка покупателя выполняется отдельным штатным маршрутом [`POST /store/carts/{id}/customer`](#50-привязка-корзины-к-покупателю-claim) (этап 5). Адрес передается объектом (`first_name`, `last_name`, `address_1`, `city`, `country_code`, `postal_code`, `phone`).
 
 ```bash
 curl -X POST "http://localhost:9000/store/carts/cart_01M8EJM9QSQ571G9WXJFP228R1" \
@@ -1306,18 +1322,22 @@ curl -X POST "http://localhost:9000/store/payment-collections" \
 
 **Серверная сериализация завершения (этап 4.5, 27.11.2026):** маршрут защищен межпроцессной блокировкой по `cart_id` — транзакционный advisory-лок PostgreSQL через штатный Locking Module (провайдер `locking-postgres`), middleware `backend/src/api/middlewares/cart-completion.ts` на самом штатном маршруте. Блокировка охватывает весь запрос (проверку состояния корзины, выполнение workflow, коммит) и гарантированно освобождается (транзакционный лок снимается PostgreSQL при коммите/откате/обрыве соединения). Два одновременных complete одной корзины создают **ровно один заказ** (второй запрос дожидается и получает существующий); разные корзины оформляются параллельно. Блокировка не обходима прямым вызовом Store API. Покрыто регрессионным тестом (`store-cart-checkout.spec.ts`, Promise.allSettled).
 
-Возможные коды: 200 (`{"type":"order"}` — в том числе при повторном и одновременном complete); 409 `conflict` «Cart is already being completed by another request» — блокировка той же корзины занята дольше 30 с (незавершающееся оформление); 400 `invalid_data`: `"Payment collection has not been initiated for cart"` / `"Payment sessions are required to complete cart"` / `"No shipping method selected but the cart contains items that require shipping."`.
+Возможные коды: 200 (`{"type":"order"}` — в том числе при повторном и одновременном complete); 409 `conflict` «Cart is already being completed by another request» — блокировка той же корзины занята дольше 30 с (незавершающееся оформление); **404 — с этапа 5.2.1 для чужой авторизованной корзины** (middleware cart-access); 400 `invalid_data`: `"Payment collection has not been initiated for cart"` / `"Payment sessions are required to complete cart"` / `"No shipping method selected but the cart contains items that require shipping."`.
 
 ### 39. Заказ по ID
 
-`GET /store/orders/{id}` — чтение заказа гостя по id (publishable API key без пользовательской авторизации — модель «непредсказуемый id», как у корзин):
+`GET /store/orders/{id}` — чтение заказа по id. **С этапа 5.2.1 маршрут защищен серверной проверкой права доступа** (ранее — «непредсказуемый id» без авторизации, аудит 5.1):
 
+- авторизованный покупатель — только собственные заказы (посторонним и неавторизованным — 404);
+- гостевой заказ — только по подтвержденному праву: заголовок `x-cart-id` с id корзины, из которой заказ оформлен (связь order↔cart создает ядро при complete, проверяется штатным Query API):
 ```bash
-curl "http://localhost:9000/store/orders/order_01M8EJNQB9XP37Q8FZKZ8SCECY" \
-  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY"
+curl "http://localhost:9000/store/orders/order_01M8…" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" \
+  -H "x-cart-id: cart_01M8…"   # право доступа гостя (из httpOnly-cookie витрины)
 ```
+- любой отказ — контролируемый **404** `not_found` (`"Order with id: … was not found"`), неотличимый от несуществующего заказа: не раскрывает ни существование, ни персональные данные.
 
-Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","payment_status":"authorized","summary":{"paid_total":0,…}}}` — `payment_status` доступен прямо в Store API-ответе (`authorized` для `pp_system_default`; дополнительно подтверждено через Admin API). Существуют также маршруты переноса заказа покупателю (`/store/orders/{id}/transfer/*`) — этап 5. Возможные коды: 200; 404.
+Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","payment_status":"authorized","summary":{"paid_total":0,…}}}` — `payment_status` доступен прямо в Store API-ответе (`authorized` для `pp_system_default`; дополнительно подтверждено через Admin API). Перенос заказа покупателю — [маршрут 53](#53-перенос-гостевого-заказа-transfer). Возможные коды: 200; 404 (нет права/не существует).
 
 ### Безопасность корзины и заказов (проверено)
 
@@ -1327,8 +1347,266 @@ curl "http://localhost:9000/store/orders/order_01M8EJNQB9XP37Q8FZKZ8SCECY" \
 | Подмена цены (`unit_price` в payload) | 400 `invalid_data` «Unrecognized fields» — цена назначается только сервером |
 | Отрицательное/нулевое количество | 400 `invalid_data` |
 | Вариант с нулевым остатком | 400 `insufficient_inventory` |
-| Доступ к чужой корзине/гостевому заказу | Возможен по непредсказуемому id (`cart_…`/`order_…`, ULID) без дополнительной авторизации — модель безопасности Medusa для гостей; id не должен раскрываться третьим сторонам (хранение id на витрине — этапы 9–10) |
+| Доступ к чужой корзине/гостевому заказу | Гостевая корзина и гостевой заказ адресуются непредсказуемыми id (`cart_…`/`order_…`, ULID) — модель Medusa для гостей; **с этапа 5.2.1 авторизованная корзина (владелец `has_account: true`) доступна только владельцу** (чтение/изменение/complete/claim чужой — 404), **гостевой заказ — по подтвержденному праву** `x-cart-id` (см. маршруты 39/50/52); id не должен раскрываться третьим сторонам (хранение id на витрине — этапы 9–10) |
 | Итоги, скидки, наличие | Вычисляются только сервером |
+
+---
+
+## Авторизация и покупатели (аудит этапа 5)
+
+Все маршруты раздела — **штатные Auth API и Store API Medusa 2.23.0**; собственных маршрутов этап не создает. Проверено реальными HTTP-запросами на живом окружении (подэтап 5.1, 27.11.2026): полный цикл регистрации → входа → профиля → адресов → привязки корзины → заказа → истории; сессии и JWT; сброс/смена пароля; перенос гостевого заказа; негативные и межпользовательские сценарии безопасности. Результаты аудита — [PROGRESS.md](PROGRESS.md).
+
+Ключевые свойства (проверено фактически):
+
+- **Два способа авторизации**: JWT (заголовок `Authorization: Bearer <jwt>`, срок действия по умолчанию **24 ч**) и **session cookie** (`connect.sid`, HttpOnly, создается обменом JWT в `POST /auth/session`). Оба принимаются всеми маршрутами покупателя (`/store/customers/*`, `GET /store/orders`, `POST /store/carts/:id/customer`).
+- **Регистрация — два шага**: сначала auth identity (`/auth/customer/emailpass/register`), затем профиль покупателя (`POST /store/customers`) по выданному «actorless» JWT.
+- **Маршруты `/auth/*` не требуют publishable API key** (проверено) — ключ обязателен только для `/store/*`.
+- **Выход отзывает только сессию**: JWT — stateless, действует до истечения (проверено: после `DELETE /auth/session` JWT продолжает работать).
+- **Гостевые заказы не наследуются** при регистрации покупателя с тем же email — заказ виден в истории только после штатного transfer (маршрут 53).
+- **Список заказов серверно фильтруется по покупателю** (`customer_id` из auth context) — требование приемки 4.4 выполняется штатно.
+- **Защита от перебора паролей в ядре отсутствует** (проверено: 5 последовательных неверных входов — 5×401 без блокировок и задержек; rate-limit в Medusa 2.23 нет). Классификация находок безопасности — [PROGRESS.md](PROGRESS.md), решение — в подэтапе 5.2.
+
+### 40. Регистрация покупателя: auth identity
+
+| | |
+|---|---|
+| **Назначение** | Создание учетных данных (email+пароль) покупателя; первый шаг регистрации |
+| **Метод** | `POST` |
+| **URL** | `/auth/customer/emailpass/register` |
+| **Принадлежность** | Medusa Auth API |
+| **Авторизация** | Не требуется (publishable key не нужен) |
+
+Тело: `{ "email": "<уникальный email>", "password": "<пароль>" }`.
+
+```bash
+curl -X POST "http://localhost:9000/auth/customer/emailpass/register" \
+  -H "Content-Type: application/json" \
+  --data-raw '{"email":"customer@example.com","password":"<пароль>"}'
+```
+
+```json
+HTTP 200
+{ "token": "<jwt>" }
+```
+
+Токен — «actorless» JWT (auth identity существует, но профиль покупателя еще не создан): им выполняется следующий шаг. Возможные коды: 200; **401** `unauthorized` `"Identity with email already exists"` — повторная регистрация существующего email (проверено).
+
+### 41. Регистрация покупателя: профиль
+
+| | |
+|---|---|
+| **Назначение** | Создание customer profile и привязка его к auth identity (второй шаг регистрации) |
+| **Метод** | `POST` |
+| **URL** | `/store/customers` |
+| **Авторизация** | Publishable API key + `Authorization: Bearer <actorless JWT с шага 40>` |
+
+Тело: `{ "email": "<тот же email>", "first_name": "...", "last_name": "...", "phone": "..." (опционально) }`.
+
+```bash
+curl -X POST "http://localhost:9000/store/customers" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" \
+  -H "Authorization: Bearer <jwt>" -H "Content-Type: application/json" \
+  --data-raw '{"email":"customer@example.com","first_name":"Анна","last_name":"Иванова"}'
+```
+
+```json
+HTTP 200
+{ "customer": { "id": "cus_01M8EQSDRMVA3C…", "email": "customer@example.com",
+  "first_name": "Анна", "last_name": "Иванова", "phone": null,
+  "has_account": true, "addresses": [], "metadata": null } }
+```
+
+Возможные коды: 200; **401** без токена (`{"message":"Unauthorized"}` — анонимное создание профиля невозможно, проверено); **422** `duplicate_error` `"Customer with this email already has an account"` — повторное создание профиля с тем же email (проверено).
+
+### 42. Вход (JWT)
+
+| | |
+|---|---|
+| **Назначение** | Аутентификация покупателя, получение JWT |
+| **Метод** | `POST` |
+| **URL** | `/auth/customer/emailpass` |
+| **Авторизация** | Не требуется |
+
+Тело: `{ "email": "...", "password": "..." }`. Ответ: `{ "token": "<jwt>" }` — JWT с `actor_type: "customer"` и `actor_id` (срок действия по умолчанию 24 ч — `jwtExpiresIn`, проверено по payload).
+
+Возможные коды: 200; **401** `unauthorized` `"Invalid email or password"` — и для неверного пароля, и для несуществующего email (одинаковый ответ — **перечисление email через вход невозможно**, проверено).
+
+### 43. Сессия: обмен токена и выход
+
+`POST /auth/session` с заголовком `Authorization: Bearer <jwt>` — обмен JWT на session cookie (для витрин, предпочитающих cookie; JWT при этом клиент больше не хранит):
+
+```bash
+curl -i -X POST "http://localhost:9000/auth/session" \
+  -H "Authorization: Bearer <jwt>"
+```
+
+```text
+HTTP 200
+Set-Cookie: connect.sid=<opaque>; Path=/; HttpOnly
+{"jwtExpiresIn": 86400}
+```
+
+Дальнейшие запросы идентифицируют покупателя cookie `connect.sid` (проверено: `GET /store/customers/me` с cookie без Bearer → 200). Без Bearer → 401.
+
+`DELETE /auth/session` (с cookie) — **выход**: сессия отзывается, тот же cookie далее → 401 (проверено). JWT при этом остается действующим до истечения срока (stateless; проверено) — вышедший по сессии клиент с сохраненным JWT продолжает доступ.
+
+### 44. Обновление JWT
+
+`POST /auth/token/refresh` — выпуск нового JWT по действующему Bearer или session cookie → 200 `{ "token": "<новый jwt>" }` (проверено). С истекшим токеном → 401.
+
+### 45. Сброс пароля: запрос токена
+
+| | |
+|---|---|
+| **Метод** | `POST` |
+| **URL** | `/auth/customer/emailpass/reset-password` |
+| **Авторизация** | Не требуется |
+
+Тело: `{ "identifier": "<email>" }`. Ответ — **201 без тела** для существующего и несуществующего email **одинаково** (перечисление email невозможно, проверено). Одноразовый reset-токен (TTL **15 минут**, `purpose: "reset"`, jti, атомарное поглощение при использовании — по исходникам 2.23) генерируется workflow и публикуется **событием** `auth.password_reset_token_generated` — доставка получателю требует notification-провайдера/подписчика, из коробки не настроена (подэтап 5.2).
+
+### 46. Смена пароля
+
+| | |
+|---|---|
+| **Метод** | `POST` |
+| **URL** | `/auth/customer/emailpass/update` |
+| **Авторизация** | Bearer **reset-токен** из шага 45 (не обычный JWT) |
+
+Тело: `{ "password": "<новый пароль>" }` → 200 `{ "success": true }`. Обычный JWT (вход/refresh) отклоняется: **401** `"Invalid token"` (проверено) — маршрут принимает только токены `purpose: "reset"` с jti; токен одноразовый.
+
+### 47. Текущий покупатель
+
+| | |
+|---|---|
+| **Метод** | `GET` |
+| **URL** | `/store/customers/me` |
+| **Авторизация** | Publishable API key + Bearer JWT или session cookie |
+
+```json
+HTTP 200
+{ "customer": { "id": "cus_…", "email": "…", "company_name": null, "first_name": "…",
+  "last_name": "…", "phone": "…", "metadata": null, "has_account": true,
+  "addresses": [ … ], "created_at": "…", "updated_at": "…" } }
+```
+
+Дефолтные поля 2.23 (проверено): `id`, `email`, `company_name`, `first_name`, `last_name`, `phone`, `metadata`, `has_account`, `addresses[]` (полные объекты адресов с флагами `is_default_shipping`/`is_default_billing`). Поля `default_shipping_address_id`/`default_billing_address_id` в Store API-ответе **не возвращаются даже с явным `fields`** (проверено) — дефолты читаются по флагам адресов. Без авторизации → **401** `{"message":"Unauthorized"}`; с недействительным токеном → 401.
+
+### 48. Изменение профиля
+
+`POST /store/customers/me` — тело: частичное `{ first_name, last_name, phone, company_name, metadata }` → 200 с обновленным `customer` (проверено: имя/телефон сохраняются). Валюта/email покупателя этим маршрутом не меняются.
+
+### 49. Адреса покупателя
+
+Все маршруты требуют publishable key + авторизацию покупателя. Дефолты доставки/выставления счета задаются флагами `is_default_shipping` / `is_default_billing` при создании.
+
+**Создание** — `POST /store/customers/me/addresses`:
+
+```bash
+curl -X POST "http://localhost:9000/store/customers/me/addresses" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  --data-raw '{"first_name":"Анна","last_name":"Иванова","address_1":"ул. Тестовая, 5","city":"Москва","country_code":"ru","postal_code":"101000","is_default_shipping":true}'
+```
+
+Ответ — **200 с объектом `customer`** (не `address` — проверено): созданный адрес доступен в `customer.addresses[]`, дефолты — по флагам. Тело адреса: `first_name`, `last_name`, `company`, `address_1`, `address_2`, `city`, `province`, `postal_code`, `country_code`, `phone`, `metadata`, `is_default_shipping`, `is_default_billing`.
+
+**Список** — `GET /store/customers/me/addresses` → 200 `{ "addresses": [...], "count": 2, "offset": 0, "limit": ... }` (только свои — фильтр по `customer_id` из auth context).
+
+**Один адрес** — `GET /store/customers/me/addresses/{address_id}` → 200 `{ "address": { "id": "cuaddr_…", "city": "…", "is_default_shipping": true, … } }`; **чужой адрес (другого покупателя) → 404** `not_found` (проверено).
+
+**Изменение** — `POST /store/customers/me/addresses/{address_id}` — частичное тело → 200 `{ "customer": … }` (проверено: город/индекс обновились).
+
+**Удаление** — `DELETE /store/customers/me/addresses/{address_id}` → 200:
+
+```json
+{ "id": "<customer_id>", "object": "address", "deleted": true, "parent": { "customer": … } }
+```
+
+Возможные коды: 200; 404 (несуществующий/чужой адрес).
+
+### 50. Привязка корзины к покупателю (claim)
+
+| | |
+|---|---|
+| **Назначение** | Перенос гостевой корзины (с позициями) авторизованному покупателю — например, гость собрал корзину, затем вошел |
+| **Метод** | `POST` |
+| **URL** | `/store/carts/{id}/customer` |
+| **Авторизация** | Publishable API key + Bearer JWT или session cookie |
+
+```bash
+curl -X POST "http://localhost:9000/store/carts/cart_01M8…/customer" \
+  -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY" \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" --data-raw '{}'
+```
+
+```json
+HTTP 200
+{ "cart": { "id": "cart_01M8…", "customer_id": "cus_01M8EQSDRMVA…",
+  "email": "customer@example.com", "items": [ …позиции сохранены… ] } }
+```
+
+Проверено: позиции и итоги **сохраняются** после claim; повторный claim тем же покупателем — 200 (идемпотентно). **Корзина, созданная под авторизацией, привязывается автоматически** (`POST /store/carts` с Bearer подставляет `customer_id` из auth context — проверено); для корзин, созданных до входа, нужен явный claim. Несколько корзин одного покупателя сосуществуют без ограничений (проверено).
+
+**С этапа 5.2.1 claim защищен серверно** (`backend/src/api/middlewares/cart-access.ts`): привязать можно гостевую корзину (без владельца или с неявным покупателем `has_account: false`, которого ядро назначает при установке email) или свою собственную; присвоение чужой авторизованной корзины — 404. Проверка выполняется под тем же advisory-локом, что и complete (4.5), и повторяется после захвата: конкурентные claim/claim и claim/complete одной корзины сериализуются, победитель фиксирует владельца в транзакции workflow — конкурент получает 404; повторный claim своей корзины идемпотентен. Обход прямым вызовом Store API невозможен — middleware стоит на штатном маршруте.
+
+### 51. История заказов покупателя
+
+| | |
+|---|---|
+| **Метод** | `GET` |
+| **URL** | `/store/orders` |
+| **Авторизация** | Publishable API key + Bearer JWT или session cookie (**обязательна**) |
+
+```json
+HTTP 200
+{ "orders": [ { "id": "order_…", "display_id": 33, "status": "pending",
+  "email": "customer@example.com", "total": 5090, "currency_code": "rub", … } ],
+  "count": 1, "offset": 0, "limit": 50 }
+```
+
+Список **с сервера фильтруется по `customer_id` из auth context** (требование приемки 4.4; проверено: покупатель B не видит заказы A; свежезарегистрированный покупатель с email гостевого заказа видит `count: 0`). Без авторизации → **401** `{"message":"Unauthorized"}`. Query: `limit`/`offset`, `fields`.
+
+### 52. Заказ по ID и авторизованные заказы
+
+`GET /store/orders/{id}` — **с этапа 5.2.1 доступ защищен серверной проверкой права** (реализация — [маршрут 39](#39-заказ-по-id) и официальный гайд Medusa «Restrict Order Retrieval»; middleware `order-access.ts` на штатном маршруте):
+
+| Кто | Доступ |
+|---|---|
+| Владелец (Bearer/сессия) | 200 — свой заказ |
+| Посторонний авторизованный покупатель | **404** (контролируемый отказ без раскрытия) |
+| Неавторизованный запрос | **404** — голый order_id больше не авторизация |
+| Гость с заголовком `x-cart-id` (корзина этого заказа) | 200 — подтвержденное право possession-типа |
+| Заказ зарегистрированного покупателя + `x-cart-id` | **404** — proof открывает только гостевые заказы |
+
+Заказ, оформленный авторизованным покупателем (claim → complete), в Store API-ответах не отличается от гостевого: `customer_id` не экспонируется; принадлежность видна через список (51) и Admin API (`fields=+customer_id`).
+
+### 53. Перенос гостевого заказа (transfer)
+
+Штатный механизм связывания ранее оформленных гостевых заказов с зарегистрированным покупателем. **С этапа 5.2.1 инициатор request/cancel проверяется серверно** (middleware `order-access.ts`): допустим только покупатель, чей email совпадает с email заказа (легитимная семантика Medusa «оформил гостем со своим email — забираю в аккаунт»); посторонний получает тот же 404, что и для несуществующего заказа, — ответ с полными данными заказа уходит только легитимному инициатору (закрывает утечку из аудита 5.1):
+
+- `POST /store/orders/{id}/transfer/request` (Bearer покупателя; тело `{ "description": "..." (опц.), "update_order_email": bool (опц.) }`) → **200** `{ "order": … }`. Создает order change типа `transfer` (статус `requested`, токен-UUID внутри change-action), публикует событие `order.transfer_requested`; токен предназначен для доставки на **email заказа** (нужен notification-провайдер, как в 45). Повторный request до завершения → **400** `invalid_data` `"Order (…) already has an active transfer request"` (проверено).
+- `POST /store/orders/{id}/transfer/cancel` (Bearer инициатора) → 200 — отменяет transfer change (проверено).
+- `POST /store/orders/{id}/transfer/accept` — **без авторизации**, тело `{ "token": "<из письма>" }`; неверный токен → **400** `not_allowed` `"Invalid token."` (проверено).
+- `POST /store/orders/{id}/transfer/decline` — аналогично, по токену.
+
+### Безопасность авторизации и покупателей (проверено)
+
+| Проверка | Результат |
+|---|---|
+| `GET /store/orders` без авторизации | **401** — история заказов требует JWT/сессию |
+| Заказы покупателя A в списке покупателя B | **Отсутствуют** — серверный фильтр по `customer_id` из auth context |
+| Профиль/адрес покупателя A из-под B | **Недоступны**: `/store/customers/me` всегда возвращает только себя; чужой `address_id` → 404 |
+| `GET /store/orders/:id` (чужой/без права доступа) | **404** с этапа 5.2.1: владелец — по авторизации, гость — по `x-cart-id` (маршрут 39/52); отказ неотличим от несуществующего заказа |
+| Claim чужой корзины (`POST /store/carts/:id/customer`) | **404** с этапа 5.2.1: привязать можно гостевую или свою корзину; проверка под advisory-локом (конкурентные claim/claim, claim/complete сериализуются) |
+| Чтение/изменение/complete чужой авторизованной корзины | **404** с этапа 5.2.1 на всех маршрутах `/store/carts/:id*` (middleware `cart-access.ts`) |
+| `transfer/request` чужого заказа | **404** с этапа 5.2.1 — инициатор только с email заказа; ответ с данными только легитимному |
+| Customer JWT → `/admin/*` | **401** — разграничение акторов |
+| Admin JWT → `/store/customers/me` | **401** — admin-токен не является customer-актором |
+| Искаженный/недействительный JWT | **401** `{"message":"Unauthorized"}` |
+| Перебор паролей (5×неверный вход) | **5×401 без блокировок и задержек** — штатного rate limiting нет (ни в core, ни во framework; проверено по исходникам); решение — подэтап 5.2.2 |
+| Перечисление email (вход / сброс пароля) | **Невозможно**: одинаковые ответы 401 (вход) и 201 (сброс) для существующих/несуществующих email |
+| Выход (`DELETE /auth/session`) | Отзывает **сессию**; JWT остается действующим до истечения (stateless) |
+| Смена пароля | Только по одноразовому reset-токену (TTL 15 мин, атомарное поглощение); обычный JWT → 401 |
 
 ---
 
@@ -1442,12 +1720,29 @@ curl -X POST 'http://localhost:9000/auth/user/emailpass' \
 
 Серверные требования complete: payment collection с сессией и способ доставки для позиций `requires_shipping`; email обязателен только на уровне витрины (шаг 5 рекомендуется выполнять до создания payment collection, чтобы сумма платежа соответствовала финальной корзине).
 
+### Checkout авторизованного покупателя (этап 5)
+
+```text
+ 0. Регистрация/вход (при необходимости):
+    POST /auth/customer/emailpass/register → actorless JWT → POST /store/customers
+    POST /auth/customer/emailpass → JWT (или POST /auth/session → cookie)
+ 1–8. Те же шаги, что и гостевой checkout (выше);
+    корзина, созданная под Bearer/cookie, получает customer_id автоматически
+    (или явный claim: POST /store/carts/:id/customer — позиции сохраняются)
+ 9. POST /store/carts/:id/complete {}            → заказ (с customer_id покупателя)
+10. GET  /store/orders (Bearer)                   → история: только свои заказы
+    GET  /store/orders/:id                        → конкретный заказ (работает и без
+                                                    авторизации — модель этапа 4)
+```
+
+Гостевые заказы, оформленные до регистрации (даже с тем же email), в истории не появляются — их переносят штатным transfer (маршрут 53).
+
 ---
 
 ## Что будет добавлено на следующих этапах
 
-- Этап 5: авторизация и покупатели (`/auth/customer/*`, `/store/customers/*`, заказы покупателя, перенос заказа `/store/orders/:id/transfer/*`).
+- Этап 5 (продолжение): решения аудита 5.1 — конфигурация delivery для reset/transfer-токенов и rate limiting (маршруты этапа уже описаны выше, разделы 40–53).
 - Этап 6: платежные провайдеры ЮKassa/Т-Банк (webhooks, возвраты), расширенные способы доставки.
-- Этапы 9–10: группы Commerce Client/composables и страницы витрины (каталог, корзина, checkout, личный кабинет).
+- Этапы 9–10: группы Commerce Client/composables и страницы витрины (каталог, корзина, checkout, авторизация, личный кабинет).
 
 Каждый новый модуль обязан сопровождаться разделом в этом файле.
