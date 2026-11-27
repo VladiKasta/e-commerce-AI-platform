@@ -31,7 +31,7 @@
 |---|---|
 | **postgres** | Единственное хранилище состояния: товары, заказы, клиенты, настройки Medusa. Создает базу и пользователя автоматически при первом старте (механизм официального образа). Не публикуется наружу. |
 | **redis** | Сессии Medusa (`redisUrl`), кэш (модуль `cache-redis`), шина событий (`event-bus-redis`) и движок workflows (`workflow-engine-redis`). Данные Redis эphemeral: не критичны и восстанавливаются при рестарте. Не публикуется наружу. |
-| **meilisearch** | Поисковая инфраструктура. На этапе 1 только запущен с master key и persistent volume; индексация товаров появится на этапе 3. Не публикуется наружу. |
+| **meilisearch** | Поисковый движок каталога (этап 3): индексы товаров/вариантов/цен/остатков/характеристик владеет официальный Search Module Medusa; каталог/поиск/фасеты Store API обслуживаются отсюда. Не публикуется наружу. |
 | **init** | Одноразовый процесс инициализации: валидация окружения → миграции (`medusa db:migrate`) → идемпотентный seed → создание администратора. Пишет publishable API key в корневой `.env`. Завершается кодом 0; medusa стартует только после его успешного завершения (`depends_on: service_completed_successfully`). |
 | **medusa** | Коммерческий бэкенд: Store API (`/store/*`), Admin API (`/admin/*`), auth (`/auth/*`), health (`/health`) и Medusa Admin (`/app`). Работает в dev-режиме `medusa develop` (hot reload, admin dev-сервер на 5173). |
 | **storefront** | SSR-витрина Nuxt с типизированным Commerce Client (`@medusajs/js-sdk`). Серверная сторона (SSR) обращается к Medusa по внутреннему адресу `http://medusa:9000`; после hydration браузер запрашивает публичный URL Medusa напрямую (CORS Store API разрешен). Nitro-маршруты — только `/api/health`. |

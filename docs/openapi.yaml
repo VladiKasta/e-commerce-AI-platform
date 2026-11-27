@@ -1,0 +1,1024 @@
+openapi: 3.0.3
+info:
+  title: eCommerce Starter Kit — Search & Catalog Attributes API
+  version: 1.0.0
+  description: |
+    Собственные маршруты поисковой подсистемы и характеристик каталога
+    eCommerce Starter Kit (этап 3), поверх Medusa v2.23.0.
+
+    Спецификация покрывает ТОЛЬКО собственные маршруты проекта:
+    - Store API каталога и поиска (`/store/catalog`, `/store/search`,
+      `/store/search/suggestions`) — поверх Meilisearch;
+    - Admin API характеристик каталога (модуль `catalog_attributes`);
+    - Admin API сверки поискового индекса (`/admin/search/reconcile`).
+
+    Штатные маршруты Medusa (`/store/products`, `/store/product-categories`,
+    `/store/regions`, `/auth/*` и т.д.) документированы официальной
+    спецификацией Medusa и справочником docs/api.md; здесь не дублируются.
+
+    Живые примеры ответов получены на демо-каталоге (12 товаров,
+    30 поисковых документов) 27.11.2026; идентификаторы будут отличаться.
+servers:
+  - url: http://localhost:9000
+    description: Локальное окружение (MEDUSA_PUBLIC_URL)
+tags:
+  - name: Store Catalog
+    description: Каталог, поиск и подсказки (publishable API key)
+  - name: Admin Attributes
+    description: Реестр характеристик, допустимые значения, привязки к категориям (Bearer JWT)
+  - name: Admin Product Attribute Values
+    description: Значения характеристик товара (Bearer JWT)
+  - name: Admin Search
+    description: Управление поисковым индексом (Bearer JWT)
+
+paths:
+  /store/catalog:
+    get:
+      tags: [Store Catalog]
+      operationId: getCatalog
+      summary: Каталог с товарами, фасетами и точной пагинацией
+      description: |
+        Один запрос возвращает страницу товаров, фасеты с ТОЧНЫМИ счетчиками
+        уникальных товаров (disjunctive), диапазоны цен, сортировки и пагинацию.
+        Фильтрация вариант-ориентированная: цвет/размер/наличие проверяются по
+        одному варианту. OR между значениями одного фильтра, AND между разными.
+      parameters:
+        - $ref: '#/components/parameters/PublishableKey'
+        - name: q
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: Полнотекстовый запрос (title, description, sku, значения характеристик; опечатки и префикс поддерживаются)
+        - name: category
+          in: query
+          required: false
+          schema: { type: string }
+          description: Хэндл категории каталога
+        - name: collection
+          in: query
+          required: false
+          schema: { type: string }
+          description: Хэндл коллекции
+        - name: region_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: Регион ценообразования; без него — регион по умолчанию (валюта магазина)
+        - name: filter
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          schema:
+            type: object
+            additionalProperties:
+              type: string
+          description: |
+            Фильтры характеристик. Wire-формат: `filter[<code>]=v1,v2`
+            (также принимается `filter.<code>=v1,v2`). Значения через запятую
+            = OR внутри кода. Коды — из реестра характеристик;
+            неизвестный код → 400. Кириллица percent-encoded.
+            Пример: `filter[brand]=deep-sea,urban-basic`
+        - name: price_min
+          in: query
+          required: false
+          schema: { type: number }
+          description: Минимальная цена в валюте региона (основные единицы)
+        - name: price_max
+          in: query
+          required: false
+          schema: { type: number }
+          description: Максимальная цена в валюте региона
+        - name: in_stock
+          in: query
+          required: false
+          schema: { type: string, enum: ["true", "false"] }
+          description: |
+            true — есть хотя бы один вариант в наличии; false — есть хотя бы
+            один отсутствующий вариант (не «распродан полностью»)
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [relevance, price_asc, price_desc, newest, title_asc]
+            default: relevance
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 24 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, maximum: 10000, default: 0 }
+      responses:
+        '200':
+          description: Каталог (в т.ч. пустая выдача)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogResponse' }
+              example:
+                products:
+                  - id: prod_01M87JXH5R6WX9T1HH0G6DG3EA
+                    variant_id: variant_01M87JXH78C4ESGHPEMMCBHZWA
+                    title: Худи «Полярное»
+                    description: Утепленное худи для холодного сезона. Высокий ворот, плотный трикотаж.
+                    handle: hudi-polyarnoe
+                    sku: HOODIE-POL-L
+                    thumbnail: null
+                    price: { amount: 4590, currency_code: rub }
+                    in_stock: true
+                    category_handles: [hoodies]
+                    collection_handles: [eko]
+                    attributes:
+                      brand: north-polar
+                      material: [polyester, cotton]
+                      rating: 4.7
+                      eco: true
+                      size: L
+                pagination: { total: 12, limit: 2, offset: 0, hasMore: true }
+                facets:
+                  - { code: price, label: Цена, type: range, unit: RUB, min: 390, max: 4590 }
+                  - code: in_stock
+                    label: Наличие
+                    type: boolean
+                    options:
+                      - { value: "true", label: В наличии, count: 10, selected: false }
+                      - { value: "false", label: Нет в наличии, count: 4, selected: false }
+                  - code: brand
+                    label: Бренд
+                    type: checkbox
+                    options:
+                      - { value: medusa-originals, label: Medusa Originals, count: 4, selected: false }
+                      - { value: deep-sea, label: Deep Sea, count: 3, selected: false }
+                sortOptions: [relevance, price_asc, price_desc, newest, title_asc]
+        '400':
+          $ref: '#/components/responses/InvalidQuery'
+        '503':
+          $ref: '#/components/responses/SearchUnavailable'
+
+  /store/search:
+    get:
+      tags: [Store Catalog]
+      operationId: searchProducts
+      summary: Полнотекстовый поиск (тот же контракт, что каталог)
+      description: |
+        `q` обязателен. Поиск по названию, описанию, артикулу и значениям
+        характеристик (searchable: title, description, sku, attributes).
+        Поддерживает русский язык, опечатки (1 для слов ≥ 4 символов,
+        2 для ≥ 8; на sku отключены) и поиск по неполному слову.
+        Подсказки для typeahead — отдельный маршрут /store/search/suggestions.
+      parameters:
+        - $ref: '#/components/parameters/PublishableKey'
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          description: Поисковая строка (percent-encoded для не-ASCII)
+        - $ref: '#/components/parameters/Category'
+        - $ref: '#/components/parameters/RegionId'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/PriceMin'
+        - $ref: '#/components/parameters/PriceMax'
+        - $ref: '#/components/parameters/InStock'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Результаты поиска (в т.ч. пустая выдача)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogResponse' }
+              example:
+                products:
+                  - id: prod_01M87JXH5RP3Y4PPCAC5KG3RRF
+                    variant_id: variant_01M87JXH774MFYTQVCCM95NC8B
+                    title: Футболка «Простая»
+                    handle: futbolka-prostaya
+                    sku: TEE-BASIC-OS
+                    thumbnail: null
+                    price: { amount: 990, currency_code: rub }
+                    in_stock: true
+                    category_handles: [t-shirts]
+                    collection_handles: []
+                    attributes: { brand: urban-basic, material: cotton, rating: 4.3, eco: false, size: OS }
+                pagination: { total: 3, limit: 2, offset: 0, hasMore: true }
+                facets: []
+                sortOptions: [relevance, price_asc, price_desc, newest, title_asc]
+        '400':
+          $ref: '#/components/responses/InvalidQuery'
+        '503':
+          $ref: '#/components/responses/SearchUnavailable'
+
+  /store/search/suggestions:
+    get:
+      tags: [Store Catalog]
+      operationId: searchSuggestions
+      summary: Поисковые подсказки (typeahead)
+      description: До 8 уникальных товаров по префиксу (название/артикул/значения характеристик). Фасетов и пагинации нет.
+      parameters:
+        - $ref: '#/components/parameters/PublishableKey'
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Подсказки (может быть пустым массивом)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuggestionsResponse' }
+              example:
+                suggestions:
+                  - { text: Футболка «Простая», product_id: prod_01M87JXH5RP3Y4PPCAC5KG3RRF, handle: futbolka-prostaya, sku: TEE-BASIC-OS }
+                  - { text: Футболка «Медуза», product_id: prod_01M87JXH5RQG8G7NCBAQME8JPG, handle: futbolka-meduza, sku: TEE-MED-L-WHT }
+                  - { text: Футболка «Кракен», product_id: prod_01M87JXH5RRF8TKCG71D97EC4H, handle: futbolka-kraken, sku: TEE-KRAKEN-L }
+                  - { text: Свитшот «Атлантика», product_id: prod_01M87JXH5RKASP3P59Z9P2NNB7, handle: svitshot-atlantika, sku: SWEAT-ATL-M }
+        '400':
+          $ref: '#/components/responses/InvalidQuery'
+        '503':
+          $ref: '#/components/responses/SearchUnavailable'
+
+  /admin/catalog-attributes:
+    get:
+      tags: [Admin Attributes]
+      operationId: listCatalogAttributes
+      summary: Список характеристик
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: Подстрока в code или name (без учета регистра)
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Реестр характеристик с options и categories
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeListResponse' }
+              example:
+                attributes:
+                  - id: 01M8BJD5QB66HGAYFKZQKVVDK6
+                    code: brand
+                    name: Бренд
+                    data_type: select
+                    filter_type: checkbox
+                    unit: null
+                    filterable: true
+                    searchable: true
+                    position: 1
+                    option_title: null
+                    options:
+                      - { id: 01M8BJD5QKSD6ZTD7J4F8Z62AK, attribute_id: 01M8BJD5QB66HGAYFKZQKVVDK6, value: medusa-originals, label: Medusa Originals, position: 1 }
+                    categories:
+                      - { id: 01M8E7DTXZPJPC7WSHEG5C9GZR, category_id: pcat_01M87JXH52XRX3DV0D5SWRZR25, attribute_id: 01M8BJD5QB66HGAYFKZQKVVDK6, position: 1 }
+                count: 6
+                limit: 20
+                offset: 0
+        '400': { $ref: '#/components/responses/InvalidData' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Admin Attributes]
+      operationId: createCatalogAttribute
+      summary: Создание характеристики
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttributeCreate' }
+            example:
+              code: season
+              name: Сезон
+              data_type: select
+              options:
+                - { value: summer, label: Лето }
+                - { value: winter, label: Зима }
+      responses:
+        '201':
+          description: Создана (включая options и пустые categories)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeResponse' }
+        '400': { $ref: '#/components/responses/InvalidData' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/catalog-attributes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AttributeId'
+    get:
+      tags: [Admin Attributes]
+      operationId: getCatalogAttribute
+      summary: Характеристика по ID
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      responses:
+        '200':
+          description: Характеристика с options и categories
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Admin Attributes]
+      operationId: updateCatalogAttribute
+      summary: Редактирование характеристики
+      description: 'Частичное тело: name, filter_type, unit, filterable, searchable, position, option_title. code/data_type неизменяемы (400 при попытке изменить).'
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttributeUpdate' }
+            example: { name: Сезонность, filterable: false }
+      responses:
+        '200':
+          description: Обновленная характеристика
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeResponse' }
+        '400': { $ref: '#/components/responses/InvalidData' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Admin Attributes]
+      operationId: deleteCatalogAttribute
+      summary: Удаление характеристики (каскадный soft delete)
+      description: 'Каскад: значения товаров → допустимые значения → привязки к категориям → характеристика. Осиротевших записей не остается.'
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      responses:
+        '200':
+          description: Удалена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeletedResponse' }
+              example: { id: 01M8BJD5QB66HGAYFKZQKVVDK6, object: catalog-attribute, deleted: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/catalog-attributes/{id}/options:
+    parameters:
+      - $ref: '#/components/parameters/AttributeId'
+    post:
+      tags: [Admin Attributes]
+      operationId: addAttributeOptions
+      summary: Добавление допустимых значений
+      description: Для select/multi_select и подписей фасетов. Дубликаты значений (в запросе или среди существующих) → 400.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [options]
+              properties:
+                options:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [value, label]
+                    properties:
+                      value: { type: string, description: Машинное значение (латиница; неизменяемо после создания) }
+                      label: { type: string, description: Подпись витрины }
+                      position: { type: integer }
+            example:
+              options: [{ value: demi, label: Межсезонье }]
+      responses:
+        '201':
+          description: Созданы
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attribute_options:
+                    type: array
+                    items: { $ref: '#/components/schemas/AttributeOption' }
+        '400': { $ref: '#/components/responses/InvalidData' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/catalog-attributes/{id}/options/{option_id}:
+    parameters:
+      - $ref: '#/components/parameters/AttributeId'
+      - name: option_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Admin Attributes]
+      operationId: updateAttributeOption
+      summary: Редактирование допустимого значения
+      description: Изменяет label и/или position. Машинное value неизменяемо (400).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                position: { type: integer }
+            example: { label: Деми-сезон, position: 3 }
+      responses:
+        '200':
+          description: Обновлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attribute_option: { $ref: '#/components/schemas/AttributeOption' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Admin Attributes]
+      operationId: deleteAttributeOption
+      summary: Удаление допустимого значения
+      description: Soft delete опции И всех значений товаров, ссылающихся на нее (значения удаляются первыми — их события переиндексируют товары).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      responses:
+        '200':
+          description: Удалена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeletedResponse' }
+              example: { id: 01M8BJD5QKSD6ZTD7J4F8Z62AK, object: attribute-option, deleted: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/catalog-attributes/{id}/categories:
+    parameters:
+      - $ref: '#/components/parameters/AttributeId'
+    post:
+      tags: [Admin Attributes]
+      operationId: setAttributeCategories
+      summary: Идемпотентная замена набора привязок к категориям
+      description: |
+        Порядок массива задает position (порядок фильтра в категории).
+        Пустой массив снимает все привязки. Несуществующие категории → 400
+        со списком. Определяет, какие фасеты показываются в категории каталога.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category_ids]
+              properties:
+                category_ids:
+                  type: array
+                  items: { type: string }
+            example:
+              category_ids: [pcat_01M87JXH52XRX3DV0D5SWRZR25]
+      responses:
+        '200':
+          description: Новый набор привязок
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  category_attributes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        attribute_id: { type: string }
+                        category_id: { type: string }
+                        position: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidData' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/products/{id}/attribute-values:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: ID товара (prod_...)
+    get:
+      tags: [Admin Product Attribute Values]
+      operationId: getProductAttributeValues
+      summary: Значения характеристик товара
+      description: Все значения уровня товара и вариантов; заполнена ровно одна типизированная колонка.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      responses:
+        '200':
+          description: Значения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeValueListResponse' }
+              example:
+                product_attribute_values:
+                  - { id: 01M8EAVRXQ7HRGD98XGTFPK47T, attribute_id: 01M8BJD5QB66HGAYFKZQKVVDK6, product_id: prod_01M87JXH5R6WX9T1HH0G6DG3EA, variant_id: null, text_value: north-polar, numeric_value: null, boolean_value: null }
+                  - { id: 01M8EAVRXWEP2X7SS2WCWC2J1P, attribute_id: 01M8BJD5QB3G5VYFX94XC8BJ4E, product_id: prod_01M87JXH5R6WX9T1HH0G6DG3EA, variant_id: null, text_value: null, numeric_value: 4.7, boolean_value: null }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Admin Product Attribute Values]
+      operationId: setProductAttributeValues
+      summary: Идемпотентная перезапись значений
+      description: |
+        Для каждой пары (характеристика × товар/вариант) набор значений
+        заменяется целиком. Проверки: товар существует; variant_id принадлежит
+        товару; тип value соответствует data_type; значения select/multi_select
+        допустимы реестром. Несоответствие → 400. Изменения попадают в
+        поисковый индекс автоматически (~1–2 с, по событиям модуля).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttributeValueSet' }
+            example:
+              values:
+                - { attribute_id: 01M8BJD5QB66HGAYFKZQKVVDK6, value: north-polar }
+      responses:
+        '201':
+          description: Значения записаны
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttributeValueListResponse' }
+        '400': { $ref: '#/components/responses/InvalidData' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Admin Product Attribute Values]
+      summary: Удаление значений одной характеристики
+      operationId: deleteProductAttributeValues
+      description: 'Без variant_id удаляются значения уровня товара; с variant_id — значения варианта. Идемпотентно (повтор — пустой ids).'
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+        - name: attribute_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: variant_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Удалены (200 и при отсутствии значений)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ids: { type: array, items: { type: string } }
+                  object: { type: string, example: product-attribute-value }
+                  deleted: { type: boolean }
+                  product_id: { type: string }
+                  attribute_id: { type: string }
+                  variant_id: { type: [string, 'null'] }
+              example:
+                ids: [01M8EAVRXQ7HRGD98XGTFPK47T]
+                object: product-attribute-value
+                deleted: true
+                product_id: prod_01M87JXH5R6WX9T1HH0G6DG3EA
+                attribute_id: 01M8BJD5QB66HGAYFKZQKVVDK6
+                variant_id: null
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/search/reconcile:
+    post:
+      tags: [Admin Search]
+      operationId: reconcileSearchIndex
+      summary: Сверка поискового индекса с PostgreSQL (точечный ремонт)
+      description: |
+        Та же логика, что scheduled job search-index-reconcile и
+        make search-reconcile: обнаружение отсутствующих/устаревших/лишних
+        документов и сирот; ремонт только затронутых товаров штатными
+        механизмами Search Module (без полной переиндексации). Параллельный
+        запуск пропускается (lock).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminAuth'
+      responses:
+        '200':
+          description: Сверка выполнена или пропущена (status=skipped — предыдущий запуск еще выполняется)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconcileResponse' }
+              example:
+                status: completed
+                summary:
+                  physicalName: store_products_v3
+                  checkedProducts: 12
+                  checkedDocs: 30
+                  missing: 0
+                  stale: 0
+                  extra: 0
+                  orphanProducts: 0
+                  orphanDocs: 0
+                  reindexedProducts: 0
+                  deletedDocs: 0
+                  errors: 0
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 'JWT администратора: POST /auth/user/emailpass → {token}'
+  parameters:
+    PublishableKey:
+      name: x-publishable-api-key
+      in: header
+      required: true
+      schema: { type: string }
+      description: Publishable API key (создается при make init, .env MEDUSA_PUBLISHABLE_KEY; публичен по определению)
+    AdminAuth:
+      name: Authorization
+      in: header
+      required: true
+      schema: { type: string, example: Bearer <jwt> }
+      description: 'Bearer JWT администратора (401 без токена)'
+    AttributeId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: ID характеристики
+    Category:
+      name: category
+      in: query
+      required: false
+      schema: { type: string }
+      description: Хэндл категории каталога
+    RegionId:
+      name: region_id
+      in: query
+      required: false
+      schema: { type: string }
+      description: Регион ценообразования (валюта наследуется; без него — регион по умолчанию)
+    Filter:
+      name: filter
+      in: query
+      required: false
+      style: deepObject
+      explode: true
+      schema:
+        type: object
+        additionalProperties: { type: string }
+      description: 'Фильтры характеристик: filter[<code>]=v1,v2 (OR внутри кода; неизвестный код → 400)'
+    PriceMin:
+      name: price_min
+      in: query
+      required: false
+      schema: { type: number }
+    PriceMax:
+      name: price_max
+      in: query
+      required: false
+      schema: { type: number }
+    InStock:
+      name: in_stock
+      in: query
+      required: false
+      schema: { type: string, enum: ["true", "false"] }
+    Sort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [relevance, price_asc, price_desc, newest, title_asc]
+        default: relevance
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 24 }
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema: { type: integer, minimum: 0, maximum: 10000, default: 0 }
+
+  responses:
+    InvalidQuery:
+      description: Некорректные параметры (невалидное значение, неизвестная характеристика в фильтре, q отсутствует/слишком длинный)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownFilter:
+              value: { type: invalid_query, message: 'Неизвестная характеристика в фильтре: nope' }
+            badLimit:
+              value: { type: invalid_query, message: 'limit должен быть целым числом от 1 до 100' }
+    InvalidData:
+      description: Ошибка валидации тела/query (zod, 400)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { type: invalid_data, message: 'Invalid request' }
+    Unauthorized:
+      description: Отсутствует/неверен Bearer JWT (штатная защита /admin/*)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { message: Unauthorized }
+    NotFound:
+      description: Сущность не существует
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { type: not_found, message: 'Attribute with id: attr_nonexistent was not found' }
+    SearchUnavailable:
+      description: Поисковый сервис недоступен (Meilisearch не отвечает или нет активной ready-версии индекса)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            type: search_unavailable
+            message: 'Поисковый сервис временно недоступен. Повторите запрос позже. Каталог не может быть собран корректно.'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        type: { type: string }
+        message: { type: string }
+
+    FacetOption:
+      type: object
+      properties:
+        value: { type: string }
+        label: { type: string }
+        count: { type: integer, description: Точное число уникальных товаров }
+        selected: { type: boolean }
+
+    OptionsFacet:
+      type: object
+      properties:
+        code: { type: string }
+        label: { type: string }
+        type: { type: string, enum: [checkbox, select, radio, color] }
+        unit: { type: string }
+        options: { type: array, items: { $ref: '#/components/schemas/FacetOption' } }
+
+    RangeFacet:
+      type: object
+      properties:
+        code: { type: string }
+        label: { type: string }
+        type: { type: string, enum: [range] }
+        unit: { type: string }
+        min: { type: number }
+        max: { type: number }
+
+    BooleanFacet:
+      type: object
+      properties:
+        code: { type: string }
+        label: { type: string }
+        type: { type: string, enum: [boolean] }
+        options: { type: array, items: { $ref: '#/components/schemas/FacetOption' } }
+
+    CatalogProduct:
+      type: object
+      properties:
+        id: { type: string, description: ID товара (выдача сгруппирована по товарам) }
+        variant_id: { type: [string, 'null'], description: Вариант-представитель }
+        title: { type: string }
+        description: { type: string }
+        handle: { type: string }
+        sku: { type: string }
+        thumbnail: { type: [string, 'null'] }
+        price:
+          type: object
+          properties:
+            amount: { type: number, description: Минимальная цена варианта в валюте (основные единицы) }
+            currency_code: { type: string }
+        in_stock: { type: boolean }
+        category_handles: { type: array, items: { type: string } }
+        collection_handles: { type: array, items: { type: string } }
+        attributes:
+          type: object
+          additionalProperties: true
+          description: Характеристики представителя; НЕ замена карточке товара (точные цены — /store/products)
+
+    CatalogResponse:
+      type: object
+      properties:
+        products: { type: array, items: { $ref: '#/components/schemas/CatalogProduct' } }
+        pagination:
+          type: object
+          properties:
+            total: { type: integer, description: Точное число уникальных товаров }
+            limit: { type: integer }
+            offset: { type: integer }
+            hasMore: { type: boolean }
+        facets:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/OptionsFacet'
+              - $ref: '#/components/schemas/RangeFacet'
+              - $ref: '#/components/schemas/BooleanFacet'
+        sortOptions:
+          type: array
+          items: { type: string, enum: [relevance, price_asc, price_desc, newest, title_asc] }
+
+    SuggestionsResponse:
+      type: object
+      properties:
+        suggestions:
+          type: array
+          items:
+            type: object
+            properties:
+              text: { type: string }
+              product_id: { type: string }
+              handle: { type: string }
+              sku: { type: string }
+
+    AttributeOption:
+      type: object
+      properties:
+        id: { type: string }
+        attribute_id: { type: string }
+        value: { type: string, description: Машинное значение (неизменяемо) }
+        label: { type: string }
+        position: { type: integer }
+
+    Attribute:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string, description: Уникальный код (неизменяем; ключ поискового индекса attributes.<code>) }
+        name: { type: string }
+        data_type: { type: string, enum: [text, number, boolean, select, multi_select], description: Неизменяем }
+        filter_type: { type: string, enum: [checkbox, select, radio, range, color, boolean] }
+        unit: { type: [string, 'null'] }
+        filterable: { type: boolean }
+        searchable: { type: boolean }
+        position: { type: integer }
+        option_title: { type: [string, 'null'], description: Название штатной опции Medusa для вариант-специфичных значений }
+        options: { type: array, items: { $ref: '#/components/schemas/AttributeOption' } }
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              category_id: { type: string }
+              attribute_id: { type: string }
+              position: { type: integer }
+
+    AttributeResponse:
+      type: object
+      properties:
+        attribute: { $ref: '#/components/schemas/Attribute' }
+
+    AttributeListResponse:
+      type: object
+      properties:
+        attributes: { type: array, items: { $ref: '#/components/schemas/Attribute' } }
+        count: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    AttributeCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, pattern: '^[a-z0-9][a-z0-9_-]*$', description: Уникальный (дубликат → 400) }
+        name: { type: string }
+        data_type: { type: string, enum: [text, number, boolean, select, multi_select], default: text }
+        filter_type: { type: string, enum: [checkbox, select, radio, range, color, boolean], default: checkbox }
+        unit: { type: [string, 'null'] }
+        filterable: { type: boolean, default: true }
+        searchable: { type: boolean, default: true }
+        position: { type: integer, default: 0 }
+        option_title: { type: [string, 'null'] }
+        options:
+          type: array
+          items:
+            type: object
+            required: [value, label]
+            properties:
+              value: { type: string }
+              label: { type: string }
+              position: { type: integer }
+
+    AttributeUpdate:
+      type: object
+      description: Частичное обновление; code/data_type — только со значением, равным текущему (иначе 400)
+      properties:
+        name: { type: string }
+        filter_type: { type: string, enum: [checkbox, select, radio, range, color, boolean] }
+        unit: { type: [string, 'null'] }
+        filterable: { type: boolean }
+        searchable: { type: boolean }
+        position: { type: integer }
+        option_title: { type: [string, 'null'] }
+
+    AttributeValue:
+      type: object
+      properties:
+        id: { type: string }
+        attribute_id: { type: string }
+        product_id: { type: string }
+        variant_id: { type: [string, 'null'] }
+        text_value: { type: [string, 'null'] }
+        numeric_value: { type: [number, 'null'] }
+        boolean_value: { type: [boolean, 'null'] }
+      description: Заполнена ровно одна типизированная колонка
+
+    AttributeValueListResponse:
+      type: object
+      properties:
+        product_attribute_values:
+          type: array
+          items: { $ref: '#/components/schemas/AttributeValue' }
+
+    AttributeValueSet:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: array
+          items:
+            type: object
+            required: [attribute_id, value]
+            properties:
+              attribute_id: { type: string }
+              variant_id: { type: string, description: Опционально — вариант-специфичное значение (должен принадлежать товару) }
+              value:
+                description: Тип должен соответствовать data_type характеристики (string | number | boolean)
+                oneOf:
+                  - type: string
+                  - type: number
+                  - type: boolean
+
+    ReconcileSummary:
+      type: object
+      properties:
+        physicalName: { type: [string, 'null'], description: Физический индекс активной ready-версии }
+        checkedProducts: { type: integer }
+        checkedDocs: { type: integer }
+        missing: { type: integer }
+        stale: { type: integer }
+        extra: { type: integer }
+        orphanProducts: { type: integer }
+        orphanDocs: { type: integer }
+        reindexedProducts: { type: integer }
+        deletedDocs: { type: integer }
+        errors: { type: integer }
+
+    ReconcileResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [completed, skipped] }
+        summary: { $ref: '#/components/schemas/ReconcileSummary' }
+
+    DeletedResponse:
+      type: object
+      properties:
+        id: { type: string }
+        object: { type: string }
+        deleted: { type: boolean }

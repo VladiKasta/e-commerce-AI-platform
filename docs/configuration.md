@@ -78,9 +78,11 @@
 
 | Переменная | Значение по умолчанию | Обязательна | Заполнение | Доступ | Назначение |
 |---|---|---|---|---|---|
-| `MEILISEARCH_HOST` | `http://meilisearch:7700` | да | вручную | private | Внутренний Docker-URL Meilisearch (наружу не публикуется). Зарезервирован для этапа 3. |
-| `MEILISEARCH_MASTER_KEY` | — | да | [auto] | private | Master key Meilisearch (hex, 32 символа; минимум 16). |
-| `MEILISEARCH_INDEX_PREFIX` | `store` | да | вручную | private | Префикс поисковых индексов (этап 3). |
+| `MEILISEARCH_HOST` | `http://meilisearch:7700` | да | вручную | private | Внутренний Docker-URL Meilisearch (наружу не публикуется). Используется провайдером поиска и сверкой индекса. |
+| `MEILISEARCH_MASTER_KEY` | — | да | [auto] | private | Master key Meilisearch (hex, 32 символа; минимум 16). Используется только внутри backend-контейнеров: провижинирование API-ключей с минимальными правами (search/индексация) и чтение сырых документов сверкой индекса. |
+| `MEILISEARCH_INDEX_PREFIX` | `store` | да | вручную | private | Префикс физических поисковых индексов (`store_products_vN`). |
+| `MEILISEARCH_STOP_WORDS` | — (встроенный набор `["и","в","с","для","на"]`) | нет | вручную | private | Стоп-слова полнотекстового поиска: JSON-массив строк (`MEILISEARCH_STOP_WORDS=["и","в","с","the"]`). Читается при загрузке определения индекса; применяется к физическому индексу при создании/миграции версии (`make search-init` / `make search-reindex`). Некорректный JSON не роняет backend — значение по умолчанию + предупреждение в логах. |
+| `MEILISEARCH_SYNONYMS` | — (пусто) | нет | вручную | private | Синонимы полнотекстового поиска: JSON-объект `{"слово":["синоним1","синоним2"]}` (двунаправленные синонимы Meilisearch). Способ применения — как у стоп-слов. Формат и примеры — [docs/search.md](search.md). |
 | `SEARCH_RECONCILE_CRON` | `0 * * * *` | нет | вручную | private | Расписание (cron) scheduled job сверки индекса с PostgreSQL (этап 3.6.2): обнаруживает отсутствующие/устаревшие/лишние документы и точечно ремонтирует затронутые товары через Search Module. Ручной запуск — `make search-reconcile`. |
 
 ## Initialization

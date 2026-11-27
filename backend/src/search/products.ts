@@ -628,7 +628,7 @@ const productFields = search.define({
   product_id: search.keyword().filterable(),
   variant_id: search.keyword(),
   status: search.keyword().filterable(),
-  title: search.text().searchable(),
+  title: search.text().searchable().sortable(),
   description: search.text().searchable(),
   sku: search.text().searchable().filterable(),
   handle: search.keyword(),
