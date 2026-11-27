@@ -133,6 +133,7 @@ Commerce Client автоматически добавляет `+*variants.calcul
 | 400 | `not_allowed` | Отсутствует/недействителен publishable API key |
 | 400 | `invalid_data` | Неверный тип query-параметра (например, `limit=abc`) |
 | 404 | `not_found` | Ресурс не существует или не виден через ключ |
+| 409 | `conflict` | Конфликт состояния (например, complete корзины, чья блокировка занята дольше 30 с) |
 | 5xx | — | Внутренняя ошибка backend (тело не детерминировано) |
 
 Commerce Client нормализует любые ошибки к `CommerceError` (`statusCode`, `code`, `message`) — см. [docs/commerce-client.md](commerce-client.md).
@@ -1100,7 +1101,7 @@ HTTP 404
 
 ## Корзина, checkout и заказы (аудит этапа 4)
 
-Все маршруты раздела — **штатный Store API Medusa 2.23.0**; собственных маршрутов этап не создает. Проверено реальными HTTP-запросами на живом окружении 27.11.2026 (подэтап 4.1 — аудит штатного Cart API): полный гостевой цикл от создания корзины до заказа. Результаты аудита и решения — [PROGRESS.md](PROGRESS.md).
+Все маршруты раздела — **штатный Store API Medusa 2.23.0**; собственных маршрутов этап не создает. Проверено реальными HTTP-запросами на живом окружении: подэтап 4.1 — аудит штатного Cart API (полный гостевой цикл от создания корзины до заказа), подэтап 4.3 — покрытие интеграционными тестами (`storefront/tests/integration/store-cart-checkout.spec.ts`, 26 тестов, `make test`). Результаты аудита и решения — [PROGRESS.md](PROGRESS.md).
 
 Ключевые свойства (проверено фактически):
 
@@ -1188,7 +1189,9 @@ curl -X POST "http://localhost:9000/store/carts/cart_01M8EJM9QSQ571G9WXJFP228R1/
 
 `unit_price` (4590) равен `calculated_price.calculated_amount` каталога — цена назначается сервером.
 
-Возможные коды: 200; 400 `insufficient_inventory` (`"Some variant does not have the required inventory"` — проверено на варианте с нулевым остатком); 400 `invalid_data` — посторонние поля (`unit_price` → `"Unrecognized fields: 'unit_price'"`) или `quantity < 1`.
+> Особенность (проверено 27.11.2026): в **дефолтном** ответе суммы уровня позиции — `items[].subtotal`, `total`, `discount_total`, `adjustments` — равны `null`; заполнены только `quantity`, `unit_price` и totals корзины. Суммы позиции нужны только с явным параметром, например `?fields=+items.subtotal,+items.discount_total,+items.total,+items.adjustments` (проверено: `subtotal: 780, discount_total: 78, adjustments: [{code, amount}]`).
+
+Возможные коды: 200; 400 `insufficient_inventory` (тело `{"code":"insufficient_inventory","type":"not_allowed","message":"Some variant does not have the required inventory"}` — проверено на варианте с нулевым остатком и при превышении доступного остатка); 400 `invalid_data` — посторонние поля (`unit_price` → `"Unrecognized fields: 'unit_price'"`), `quantity < 1` (сообщение `"Value for field 'quantity' too small, expected at least: '0'"` — отклоняет и `-1`, и `0`) или несуществующий вариант (`"Variants variant_… do not exist or belong to a product that is not published"` — проверено 27.11.2026).
 
 ### 31. Позиции: изменение количества
 
@@ -1288,7 +1291,6 @@ curl -X POST "http://localhost:9000/store/payment-collections" \
     "email": "guest@example.com",
     "currency_code": "rub",
     "subtotal": 9680, "discount_total": 0, "shipping_total": 500, "tax_total": 0, "total": 9680,
-    "customer_id": null,
     "items": [ { "title": "Худи «Полярное»", "quantity": 2, "unit_price": 4590, "subtotal": 9180, "total": 9180 } ]
   }
 }
@@ -1296,9 +1298,15 @@ curl -X POST "http://localhost:9000/store/payment-collections" \
 
 Со скидкой (реальный заказ с промокодом AUDIT10 и экспресс-доставкой): `subtotal: 10170` (9180 + 990), `discount_total: 918`, `shipping_total: 990`, `total: 9252` — все суммы серверные.
 
+> `customer_id` в Store API-ответах заказа (complete и `GET /store/orders/:id`) **отсутствует вовсе** (проверено 27.11.2026). Гостевому заказу Medusa автоматически создает неявную запись customer с `has_account: false` и email гостя: связь видна только в Admin API (`GET /admin/orders/:id?fields=+customer_id` — в дефолтном ответе Admin API это поле тоже отсутствует).
+
 Серверные требования (проверено изоляцией): payment collection с сессией; способ доставки, если позиции `requires_shipping` (без них — 400). **Email сервером не требуется** — заказ создается и без него (проверено, display_id 3); сбор email — ответственность витрины.
 
-Возможные коды: 200 (`{"type":"order"}`); 400 `invalid_data`: `"Payment collection has not been initiated for cart"` / `"Payment sessions are required to complete cart"` / `"No shipping method selected but the cart contains items that require shipping."`; повторный complete завершенной корзины → 400.
+**Повторное завершение той же корзины идемпотентно (проверено 27.11.2026, уточнение аудита 4.1):** `completeCartWorkflow` возвращает **200 с тем же заказом** (`{"type":"order","order":{"id": <тот же>}}`) — дублирующий заказ не создается (`GET /admin/orders?id=…` count остается 1). Ранее здесь ошибочно указывался 400.
+
+**Серверная сериализация завершения (этап 4.5, 27.11.2026):** маршрут защищен межпроцессной блокировкой по `cart_id` — транзакционный advisory-лок PostgreSQL через штатный Locking Module (провайдер `locking-postgres`), middleware `backend/src/api/middlewares/cart-completion.ts` на самом штатном маршруте. Блокировка охватывает весь запрос (проверку состояния корзины, выполнение workflow, коммит) и гарантированно освобождается (транзакционный лок снимается PostgreSQL при коммите/откате/обрыве соединения). Два одновременных complete одной корзины создают **ровно один заказ** (второй запрос дожидается и получает существующий); разные корзины оформляются параллельно. Блокировка не обходима прямым вызовом Store API. Покрыто регрессионным тестом (`store-cart-checkout.spec.ts`, Promise.allSettled).
+
+Возможные коды: 200 (`{"type":"order"}` — в том числе при повторном и одновременном complete); 409 `conflict` «Cart is already being completed by another request» — блокировка той же корзины занята дольше 30 с (незавершающееся оформление); 400 `invalid_data`: `"Payment collection has not been initiated for cart"` / `"Payment sessions are required to complete cart"` / `"No shipping method selected but the cart contains items that require shipping."`.
 
 ### 39. Заказ по ID
 
@@ -1309,7 +1317,7 @@ curl "http://localhost:9000/store/orders/order_01M8EJNQB9XP37Q8FZKZ8SCECY" \
   -H "x-publishable-api-key: $MEDUSA_PUBLISHABLE_KEY"
 ```
 
-Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","summary":{"paid_total":0,…}}}`; `payment_status` заказа — `authorized` (проверено через Admin API). Существуют также маршруты переноса заказа покупателю (`/store/orders/{id}/transfer/*`) — этап 5. Возможные коды: 200; 404.
+Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","payment_status":"authorized","summary":{"paid_total":0,…}}}` — `payment_status` доступен прямо в Store API-ответе (`authorized` для `pp_system_default`; дополнительно подтверждено через Admin API). Существуют также маршруты переноса заказа покупателю (`/store/orders/{id}/transfer/*`) — этап 5. Возможные коды: 200; 404.
 
 ### Безопасность корзины и заказов (проверено)
 

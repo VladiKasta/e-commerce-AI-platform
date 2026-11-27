@@ -13,6 +13,7 @@ import {
   AdminUpdateAttributeOption,
   AdminUpdateCatalogAttribute,
 } from "./admin/catalog-attributes/validators"
+import { serializeCartCompletion } from "./middlewares/cart-completion"
 
 /**
  * Валидация Admin API характеристик каталога — штатные middleware
@@ -24,6 +25,15 @@ import {
  */
 export default defineMiddlewares({
   routes: [
+    // Этап 4.5: сериализация завершения корзины — транзакционный
+    // advisory-лок Locking Module (locking-postgres) на весь запрос
+    // к ШТАТНОМУ маршруту complete. Два одновременных complete одной
+    // корзины не создают дублирующих заказов (см. middleware для деталей).
+    {
+      methods: ["POST"],
+      matcher: "/store/carts/:id/complete",
+      middlewares: [serializeCartCompletion],
+    },
     // Характеристики: список / создание / редактирование
     {
       methods: ["GET"],

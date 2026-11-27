@@ -3,6 +3,7 @@ import type { ExecArgs } from "@medusajs/framework/types"
 import type { IProductModuleService } from "@medusajs/framework/types"
 import {
   ContainerRegistrationKeys,
+  MedusaError,
   Modules,
   ProductStatus,
 } from "@medusajs/framework/utils"
@@ -717,22 +718,83 @@ export default async function seedStore({ container }: ExecArgs) {
     filters: { type: "publishable" },
   })
 
-  // Ключ витрины выбирается детерминированно: уже связанный с каналом
-  // витрины, иначе ключ с служебным заголовком, иначе первый publishable.
-  // Связи остальных publishable ключей seed не изменяет.
-  let publishableKey:
-    | {
-        id: string
-        title: string
-        token: string
-        sales_channels?: Array<{ id: string } | null> | null
-      }
-    | undefined =
-      publishableKeys.find((key: { sales_channels?: Array<{ id: string } | null> | null }) =>
-        key.sales_channels?.some((channel) => channel?.id === salesChannel.id)
-      ) ??
-      publishableKeys.find((key: { title?: string }) => key.title === API_KEY_TITLE) ??
-      publishableKeys[0]
+  type PublishableKeyRow = {
+    id: string
+    title: string
+    token: string
+    sales_channels?: Array<{ id: string } | null> | null
+  }
+  const publishableKeyRows = publishableKeys as PublishableKeyRow[]
+
+  // Ключ витрины определяется однозначно; произвольные publishable-ключи
+  // seed не выбирает и не изменяет. Порядок разрешения:
+  //   1. Явно заданный ключ — токен MEDUSA_PUBLISHABLE_KEY из корневого
+  //      .env (эту переменную seed сам поддерживает актуальной); явное
+  //      указание оператора перевешивает признаки витрины.
+  //   2. Единственный ключ, связанный с каналом «Веб-витрина».
+  //   3. Несколько связанных ключей, из которых ровно один со служебным
+  //      заголовком Storefront (ключ самого seed).
+  //   4. Единственный ключ со служебным заголовком Storefront (если
+  //      связанных с каналом нет).
+  //   5. При неоднозначности — остановка с диагностикой (см. ниже);
+  //      при отсутствии подходящих ключей — создание одного раза.
+  const envPath = path.resolve(process.cwd(), "..", ".env")
+  const explicitToken = readEnvFile(envPath)?.MEDUSA_PUBLISHABLE_KEY || undefined
+  const explicitKey = explicitToken
+    ? publishableKeyRows.find((key) => key.token === explicitToken)
+    : undefined
+  if (explicitToken && !explicitKey) {
+    logger.warn(
+      "MEDUSA_PUBLISHABLE_KEY из корневого .env не найден среди publishable-ключей — выбор по признакам витрины"
+    )
+  }
+
+  const channelLinkedKeys = publishableKeyRows.filter((key) =>
+    key.sales_channels?.some((channel) => channel?.id === salesChannel.id)
+  )
+  const titledKeys = publishableKeyRows.filter(
+    (key) => key.title === API_KEY_TITLE
+  )
+
+  let publishableKey: PublishableKeyRow | undefined
+
+  if (explicitKey) {
+    publishableKey = explicitKey
+  } else if (channelLinkedKeys.length === 1) {
+    publishableKey = channelLinkedKeys[0]
+  } else if (channelLinkedKeys.length > 1) {
+    const linkedTitled = channelLinkedKeys.filter(
+      (key) => key.title === API_KEY_TITLE
+    )
+    if (linkedTitled.length === 1) {
+      publishableKey = linkedTitled[0]
+    }
+  } else if (titledKeys.length === 1) {
+    publishableKey = titledKeys[0]
+  }
+
+  // Неоднозначность не решается «произвольным» ключом: выбор среди
+  // подходящих изменил бы конфигурацию ключа, принадлежность которого
+  // витрине не подтверждена. Остановка до любых изменений связей.
+  if (
+    !publishableKey &&
+    (channelLinkedKeys.length > 1 || titledKeys.length > 1)
+  ) {
+    const describe = (key: PublishableKeyRow): string => {
+      const channels = (key.sales_channels ?? [])
+        .map((channel) => channel?.id)
+        .filter((id): id is string => Boolean(id))
+        .join(", ")
+      return `- ${key.id} («${key.title}», каналы: ${channels || "нет"})`
+    }
+    const candidates = [...new Set([...channelLinkedKeys, ...titledKeys])]
+      .map(describe)
+      .join("\n")
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      `Не удалось однозначно определить publishable-ключ витрины: найдено несколько подходящих ключей.\n${candidates}\nУкажите нужный ключ явно: запишите его полный токен (pk_…) в MEDUSA_PUBLISHABLE_KEY корневого .env и перезапустите make seed. Существующие ключи не изменены.`
+    )
+  }
 
   if (!publishableKey) {
     const { result } = await createApiKeysWorkflow(container).run({
