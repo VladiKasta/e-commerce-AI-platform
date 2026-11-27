@@ -20,6 +20,13 @@ import {
   ensureOrderAccess,
   ensureTransferInitiator,
 } from "./middlewares/order-access"
+import {
+  limitLogin,
+  limitRegister,
+  limitReset,
+  limitUpdate,
+  limitTransferRequest,
+} from "./middlewares/auth-rate-limit"
 
 /**
  * Валидация Admin API характеристик каталога — штатные middleware
@@ -82,14 +89,35 @@ export default defineMiddlewares({
         ensureOrderAccess,
       ],
     },
-    // Transfer: инициатор request/cancel — только покупатель с email,
-    // совпадающим с email заказа (легитимная семантика переноса гостевого
-    // заказа); чужой покупатель получает 404 без данных. Accept/decline
-    // остаются штатными (подтверждение — одноразовый токен на email заказа).
+    // Этап 5.2.2: распределенный rate limiting защищаемых маршрутов
+    // (механизм и ограничения — решение №38 в docs/PROGRESS.md). Порядок:
+    // лимит применяется ДО аутентификации и ДО guard-ов 5.2.1 —
+    // отказ одинаков для любых идентификаторов (перечисление email
+    // невозможно) и не расходует ресурсы штатных обработчиков.
+    {
+      methods: ["POST"],
+      matcher: "/auth/customer/emailpass",
+      middlewares: [limitLogin],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/auth/customer/emailpass/register",
+      middlewares: [limitRegister],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/auth/customer/emailpass/reset-password",
+      middlewares: [limitReset],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/auth/customer/emailpass/update",
+      middlewares: [limitUpdate],
+    },
     {
       methods: ["POST"],
       matcher: "/store/orders/:id/transfer/request",
-      middlewares: [ensureTransferInitiator],
+      middlewares: [limitTransferRequest, ensureTransferInitiator],
     },
     {
       methods: ["POST"],

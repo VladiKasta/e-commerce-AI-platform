@@ -51,6 +51,30 @@
 | `ADMIN_CORS` | `http://localhost:9000,http://localhost:5173` | да | вручную | private | Разрешенные origins для Admin API. |
 | `AUTH_CORS` | `http://localhost:3000,http://localhost:9000,http://localhost:5173` | да | вручную | private | Разрешенные origins для `/auth/*` (объединение store и admin origins). |
 
+### Rate limiting маршрутов аутентификации (этап 5.2.2)
+
+Формат значения: `"<max>/<window_seconds>"` — максимум попыток за окно. Счетчики распределены (Redis через штатный Cache Module), инкремент атомарен (advisory-лок Locking Module), окно скользящее (TTL обновляется при каждой попытке — блокировка всегда истекает сама). Превышение — HTTP 429 + `Retry-After`. При недоступности Redis лимит пропускается (fail-open, задержка не более ~0,5 с на бакет). Ключи идентификаторов — HMAC-хеши: открытые email/пароли/токены в Redis и логи не попадают. Механизм и ограничения — решение №38 в [PROGRESS.md](PROGRESS.md).
+
+| Переменная | Значение по умолчанию | Обязательна | Доступ | Назначение |
+|---|---|---|---|---|
+| `AUTH_RATE_LIMIT_LOGIN_IP` | `30/60` | нет | private | Вход покупателя (`POST /auth/customer/emailpass`) — лимит по IP. |
+| `AUTH_RATE_LIMIT_LOGIN_ID` | `5/900` | нет | private | Вход — лимит по нормализованному email (антибрутфорс). |
+| `AUTH_RATE_LIMIT_REGISTER_IP` | `30/60` | нет | private | Регистрация (`POST /auth/customer/emailpass/register`) — по IP. |
+| `AUTH_RATE_LIMIT_REGISTER_ID` | `5/3600` | нет | private | Регистрация — по email. |
+| `AUTH_RATE_LIMIT_RESET_IP` | `30/60` | нет | private | Запрос сброса пароля — по IP. |
+| `AUTH_RATE_LIMIT_RESET_ID` | `3/3600` | нет | private | Запрос сброса пароля — по identifier (одинаково для существующих/несуществующих email). |
+| `AUTH_RATE_LIMIT_UPDATE_IP` | `30/60` | нет | private | Смена пароля по reset-токену — по IP (идентификатор невозможен: токен непрозрачен). |
+| `AUTH_RATE_LIMIT_TRANSFER_IP` | `30/60` | нет | private | Запрос переноса заказа (`POST /store/orders/:id/transfer/request`) — по IP. |
+| `AUTH_RATE_LIMIT_TRANSFER_ID` | `10/3600` | нет | private | Перенос заказа — по авторизованному покупателю. |
+| `AUTH_RATE_LIMIT_TRUST_PROXY` | `false` | нет | private | Доверять `X-Forwarded-For`. По умолчанию IP берется из TCP-сокета (заголовок не подделать: Medusa выставляет `trust proxy=1`, и при прямом доступе `req.ip` подделывается через заголовок). Включать ТОЛЬКО за reverse proxy, который ПЕРЕЗАПИСЫВАЕТ заголовок (этап 10). |
+
+### Штатные настройки JWT и сессий (аудит 5.2.2, изменения не требуются)
+
+- **JWT**: срок действия 24 ч (штатный `jwtExpiresIn` Medusa; настраивается в `medusa-config.ts` → `projectConfig.http.jwtExpiresIn`). Обновление — штатный `POST /auth/token/refresh`. JWT stateless: выход из сессии его не отзывает.
+- **Сессия**: cookie `connect.sid`, **HttpOnly**, store — Redis (`redisUrl`); **Secure + SameSite=lax автоматически при `NODE_ENV=production|staging`** (решение фреймворка — CSRF-защита), в dev — без Secure (http). TTL сессии — 10 ч (штатный `sessionOptions.ttl`).
+- **Выход**: `DELETE /auth/session` отзывает сессию (cookie перестает действовать), JWT живет до истечения своего срока.
+- Production-развертывание (этап 10): за HTTPS reverse proxy убедиться, что `NODE_ENV=production` (cookie Secure) и прокси перезаписывает `X-Forwarded-For` перед включением `AUTH_RATE_LIMIT_TRUST_PROXY`.
+
 ## Administrator
 
 | Переменная | Значение по умолчанию | Обязательна | Заполнение | Доступ | Назначение |
