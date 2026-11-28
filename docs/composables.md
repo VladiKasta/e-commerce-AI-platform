@@ -6,6 +6,8 @@
 - серверные секреты не используются; браузеру доступны только `runtimeConfig.public` и publishable API key;
 - composables не зависят от UI-библиотек.
 
+> **Контракты composables этапа 9** (`useAuth`, `useCustomer`, `useOrders`, `useCart`, `useCheckout`, `usePayment` — ответственность, используемые API, ограничения и требование серверного хранения JWT/session/cart_id через HttpOnly cookies + Nitro BFF) зафиксированы приемкой этапа 5 — [docs/auth.md](auth.md), раздел «Контракты composables этапа 9». Реализация — этап 9 (не раньше).
+
 ---
 
 ## useCommerce()

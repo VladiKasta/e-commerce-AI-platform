@@ -619,4 +619,143 @@ describe("5.2.1: защита корзин и заказов (Store API)", () =>
     expect(r1.body?.order.id).toBe(r2.body?.order.id)
     createdOrderIds.push(r1.body?.order.id)
   })
+
+  // ── 5.3.1: платежные коллекции и сессии ────────────────────────────
+  // Полный гостевой и полный авторизованный checkout (создание коллекции
+  // и сессии) остаются покрытыми store-cart-checkout.spec.ts и тестами
+  // выше — здесь только матрица доступа к платежам (находка 5.3 закрыта
+  // middleware payment-access.ts: право на коллекцию наследуется от права
+  // на её корзину через link cart_payment_collection).
+
+  async function createPaymentCollection(cartId: string, bearer?: string) {
+    return storeFetch<{ payment_collection: { id: string } }>(
+      "/store/payment-collections",
+      { method: "POST", body: { cart_id: cartId }, bearer: bearer ?? null }
+    )
+  }
+
+  async function createPaymentSession(
+    paymentCollectionId: string,
+    bearer?: string
+  ) {
+    return storeFetch<{
+      payment_collection: {
+        id: string
+        payment_sessions: Array<{ id: string }> | null
+      }
+    }>(`/store/payment-collections/${paymentCollectionId}/payment-sessions`, {
+      method: "POST",
+      body: { provider_id: "pp_system_default" },
+      bearer: bearer ?? null,
+    })
+  }
+
+  it("5.3.1: коллекцию авторизованной корзины создает только владелец; отказ без раскрытия суммы", async () => {
+    const cartId = await createCart(jwtA)
+    await addItem(cartId, jwtA)
+
+    const byStranger = await createPaymentCollection(cartId, jwtB)
+    expect(byStranger.status).toBe(404)
+    // Контролируемый отказ: штатный not_found, без amount/данных корзины
+    expect(JSON.stringify(byStranger.body)).not.toContain("amount")
+
+    expect((await createPaymentCollection(cartId)).status).toBe(404)
+
+    const byOwner = await createPaymentCollection(cartId, jwtA)
+    expect(byOwner.status).toBe(200)
+    expect(byOwner.body?.payment_collection.id).toBeTruthy()
+  })
+
+  it("5.3.1: знание id коллекции не дает доступа — сессии чужой коллекции недоступны", async () => {
+    const cartId = await createCart(jwtA)
+    await addItem(cartId, jwtA)
+    const pcId = (await createPaymentCollection(cartId, jwtA)).body
+      ?.payment_collection.id
+    expect(pcId).toBeTruthy()
+    const session = await createPaymentSession(pcId, jwtA)
+    expect(session.status).toBe(200)
+    const sessionId = session.body?.payment_collection.payment_sessions?.[0]?.id
+    expect(sessionId).toBeTruthy()
+
+    // Посторонний покупатель знает collection_id и session_id — доступа нет
+    expect((await createPaymentSession(pcId, jwtB)).status).toBe(404)
+    expect(
+      (
+        await storeFetch(
+          `/store/payment-collections/${pcId}/payment-sessions/${sessionId}`,
+          { method: "POST", body: { client_data: {} }, bearer: jwtB }
+        )
+      ).status
+    ).toBe(404)
+    // Неавторизованный — тоже
+    expect((await createPaymentSession(pcId)).status).toBe(404)
+
+    // Владелец продолжает: обновление данных сессии
+    const update = await storeFetch(
+      `/store/payment-collections/${pcId}/payment-sessions/${sessionId}`,
+      { method: "POST", body: { client_data: {} }, bearer: jwtA }
+    )
+    expect(update.status).toBe(200)
+  })
+
+  it("5.3.1: гость создает коллекцию и сессию своей гостевой корзины (модель Medusa)", async () => {
+    const cartId = await createCart()
+    await addItem(cartId)
+    const pc = await createPaymentCollection(cartId)
+    expect(pc.status).toBe(200)
+    expect(
+      (await createPaymentSession(pc.body?.payment_collection.id ?? "")).status
+    ).toBe(200)
+  })
+
+  it("5.3.1: после claim коллекция наследует защиту — гость теряет доступ, владелец работает", async () => {
+    const cartId = await createCart()
+    await addItem(cartId)
+    const pcId = (await createPaymentCollection(cartId)).body
+      ?.payment_collection.id
+    expect(pcId).toBeTruthy()
+    // до claim гостевая модель: сессия создается
+    expect((await createPaymentSession(pcId)).status).toBe(200)
+
+    const claim = await storeFetch(`/store/carts/${cartId}/customer`, {
+      method: "POST",
+      body: {},
+      bearer: jwtA,
+    })
+    expect(claim.status).toBe(200)
+
+    // после claim: гость и посторонний — 404, владелец — 200
+    expect((await createPaymentSession(pcId)).status).toBe(404)
+    expect((await createPaymentSession(pcId, jwtB)).status).toBe(404)
+    expect((await createPaymentSession(pcId, jwtA)).status).toBe(200)
+  })
+
+  it("5.3.1: конкурентный claim и создание сессии — после фиксации владельца посторонний всегда 404", async () => {
+    const cartId = await createCart()
+    await addItem(cartId)
+    const pcId = (await createPaymentCollection(cartId)).body
+      ?.payment_collection.id
+    expect(pcId).toBeTruthy()
+
+    const [claim, session] = await Promise.all([
+      storeFetch(`/store/carts/${cartId}/customer`, {
+        method: "POST",
+        body: {},
+        bearer: jwtA,
+      }),
+      (async () => {
+        await new Promise((r) => setTimeout(r, 20))
+        return createPaymentSession(pcId, jwtB)
+      })(),
+    ])
+    expect(claim.status).toBe(200)
+    // Гонка: 200 означал бы, что сессия создана до фиксации владельца
+    // (гостевая модель на момент вызова — как операции самой корзины);
+    // 404 — владелец уже зафиксирован. Постоянного обхода нет в обоих
+    // случаях — инвариант проверяется после гонки.
+    expect([200, 404]).toContain(session.status)
+
+    expect((await createPaymentSession(pcId, jwtB)).status).toBe(404)
+    expect((await createPaymentSession(pcId, jwtA)).status).toBe(200)
+  })
 })

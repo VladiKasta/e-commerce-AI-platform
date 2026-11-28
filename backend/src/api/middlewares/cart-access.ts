@@ -88,8 +88,12 @@ async function queryOne<T>(
  * Владелец корзины и его статус. Неявный покупатель (has_account: false)
  * создается ядром для гостевой корзины при назначении email — такую корзину
  * обслуживает гостевая модель Medusa (id = секрет), а не владелецская.
+ *
+ * Используется также guard-ом платежных коллекций (5.3.1, payment-access.ts):
+ * платежная коллекция связана с корзиной link-ом cart_payment_collection,
+ * право доступа к ней наследуется от права доступа к её корзине.
  */
-async function loadCartAccess(
+export async function loadCartAccess(
   scope: AccessRequest["scope"],
   cartId: string
 ): Promise<CartAccessRecord | null> {
@@ -116,9 +120,11 @@ async function loadCartAccess(
 
 /**
  * Контролируемый отказ без раскрытия: тот же контракт, что у штатного
- * ответа ядра на несуществующую корзину.
+ * ответа ядра на несуществующую корзину. Переиспользуется guard-ом
+ * платежных коллекций (5.3.1) — отказ для чужой авторизованной корзины
+ * неотличим от несуществующей.
  */
-function cartNotFound(cartId: string): MedusaError {
+export function cartNotFound(cartId: string): MedusaError {
   return new MedusaError(
     MedusaError.Types.NOT_FOUND,
     `Cart with id '${cartId}' not found`

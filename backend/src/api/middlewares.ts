@@ -21,6 +21,10 @@ import {
   ensureTransferInitiator,
 } from "./middlewares/order-access"
 import {
+  guardPaymentCollectionCreate,
+  guardPaymentSessionsAccess,
+} from "./middlewares/payment-access"
+import {
   limitLogin,
   limitRegister,
   limitReset,
@@ -123,6 +127,29 @@ export default defineMiddlewares({
       methods: ["POST"],
       matcher: "/store/orders/:id/transfer/cancel",
       middlewares: [ensureTransferInitiator],
+    },
+    // Этап 5.3.1: защита платежных коллекций и сессий (закрывает находку
+    // 5.3 — маршруты ядра не проверяли владельца корзины). Право на
+    // коллекцию наследуется от права на её корзину (link
+    // cart_payment_collection, Query API): гостевая корзина работает по
+    // модели Medusa (id = секрет, гостевой checkout без регрессий),
+    // авторизованная — только владелец; посторонним и неавторизованным —
+    // контролируемый 404 без раскрытия суммы. Не затрагивает Admin API,
+    // внутренние workflows ядра и будущие webhook-маршруты провайдеров.
+    {
+      methods: ["POST"],
+      matcher: "/store/payment-collections",
+      middlewares: [guardPaymentCollectionCreate],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/store/payment-collections/:id/payment-sessions",
+      middlewares: [guardPaymentSessionsAccess],
+    },
+    {
+      methods: ["POST"],
+      matcher: "/store/payment-collections/:id/payment-sessions/:session_id",
+      middlewares: [guardPaymentSessionsAccess],
     },
     // Характеристики: список / создание / редактирование
     {
