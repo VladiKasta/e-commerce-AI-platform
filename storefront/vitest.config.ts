@@ -18,16 +18,23 @@ export default defineConfig({
     // видели бы временные повреждения. Файлы выполняются последовательно.
     fileParallelism: false,
     sequence: {
-      // Этап 5.2.3: тесты уведомлений используют те же маршруты аутентификации,
-      // что и store-auth-ratelimit, который СОЗНАТЕЛЬНО исчерпывает IP-бакеты
-      // rate limiting (30/60 с, скользящее окно; этап 5.2.2). Поэтому файл
-      // уведомлений выполняется первым — до ratelimit-спеки.
+      // Этапы 5.2.3/5.3: файлы, работающие с лимитируемыми маршрутами
+      // аутентификации, выстроены явно — тесты не зависят от порядка
+      // запуска из-за общих IP-бакетов rate limiting (30/60 с, скользящее
+      // окно): store-auth-notifications первым (сценарии писем требуют
+      // свободных бакетов), store-auth-ratelimit ПОСЛЕДНИМ (он сознательно
+      // исчерпывает IP-бакеты этапа 5.2.2). Прочие файлы эти маршруты не
+      // расходуют (вход администратора /auth/user/* не лимитируется), их
+      // взаимный порядок значения не имеет; суммарные IP-бакеты всех
+      // auth-файлов укладываются в лимит даже при запуске в одном окне
+      // (вход ≤ 20, регистрация ≤ 20, сброс ≤ 15 из 30).
       sortTestsFiles(files) {
-        const notifications = files.filter((file) =>
-          file.includes("store-auth-notifications")
-        )
-        const rest = files.filter((file) => !file.includes("store-auth-notifications"))
-        return [...notifications, ...rest]
+        const priority = (file: string): number => {
+          if (file.includes("store-auth-notifications")) return 0
+          if (file.includes("store-auth-ratelimit")) return 2
+          return 1
+        }
+        return [...files].sort((a, b) => priority(a) - priority(b))
       },
     },
   },
