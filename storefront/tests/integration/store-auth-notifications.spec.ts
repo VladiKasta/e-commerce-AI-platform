@@ -344,7 +344,7 @@ describe.skipIf(!mailpitUrl)(
       )
       await storeFetch(
         `/store/payment-collections/${pc.body?.payment_collection.id}/payment-sessions`,
-        { method: "POST", body: { provider_id: "pp_system_default" } }
+        { method: "POST", body: { provider_id: "pp_demo_online" } }
       )
       const done = await storeFetch<OrderBody>(
         `/store/carts/${cartId}/complete`,

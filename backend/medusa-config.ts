@@ -86,6 +86,47 @@ module.exports = defineConfig({
         ],
       },
     },
+    // Штатный Payment Module Medusa (этап 6.2) с демонстрационными
+    // провайдерами по контракту AbstractPaymentProvider (решение №41 в
+    // docs/PROGRESS.md; собственный платежный модуль и таблицы не создаются):
+    // - payment-cod («Оплата при получении», id pp_cod_cash) — доступен во
+    //   всех окружениях: техническая авторизация при complete, получение
+    //   денег — штатный Capture администратором;
+    // - payment-demo-online («Тестовая онлайн-оплата», id pp_demo_online) —
+    //   фиктивный провайдер для development/test: в production НЕ
+    //   регистрируется (условие ниже), а validateOptions провайдера
+    //   блокирует принудительную регистрацию (fail-fast старта).
+    // webhook_delay сокращен с 5 с до 1 с: задержка существует, чтобы webhook
+    // не гонялся с завершением корзины; для демо-сценариев и тестов этого
+    // достаточно (настраивается, производство может вернуть 5000).
+    // Системный pp_system_default остается зарегистрированным (служебный
+    // mark-as-paid), но seed не связывает его с регионом — в checkout он
+    // не выбирается; прямой выбор фиктивных провайдеров в production
+    // блокирует guard в payment-access.ts (этап 6.2).
+    {
+      resolve: "@medusajs/medusa/payment",
+      options: {
+        webhook_delay: 1_000,
+        providers: [
+          {
+            resolve: "./src/modules/payment-cod/providers/cod",
+            id: "cash",
+            options: {},
+          },
+          ...(process.env.NODE_ENV !== "production"
+            ? [
+                {
+                  resolve: "./src/modules/payment-demo-online/providers/demo",
+                  id: "online",
+                  options: {
+                    webhook_secret: process.env.PAYMENT_DEMO_WEBHOOK_SECRET,
+                  },
+                },
+              ]
+            : []),
+        ],
+      },
+    },
     // Универсальные характеристики товаров (бренды, материалы, технические
     // параметры) — этап 3. См. backend/src/modules/catalog-attributes.
     {

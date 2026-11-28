@@ -86,6 +86,14 @@
   - [52. Заказ по ID и авторизованные заказы](#52-заказ-по-id-и-авторизованные-заказы)
   - [53. Перенос гостевого заказа (transfer)](#53-перенос-гостевого-заказа-transfer)
   - [Безопасность авторизации и покупателей (проверено)](#безопасность-авторизации-и-покупателей-проверено)
+- [Платежи: Admin API и webhook (штатный, аудит этапа 6.1)](#платежи-admin-api-и-webhook-штатный-аудит-этапа-61)
+  - [54. Платежи: список и чтение (Admin)](#54-платежи-список-и-чтение-admin)
+  - [55. Capture (Admin)](#55-capture-admin)
+  - [56. Refund, в том числе частичный (Admin)](#56-refund-в-том-числе-частичный-admin)
+  - [57. Отмена заказа и авто-отмена/возврат платежа (Admin)](#57-отмена-заказа-и-авто-отменавозврат-платежа-admin)
+  - [58. Mark-as-paid и авторизация отложенной сессии (Admin)](#58-mark-as-paid-и-авторизация-отложенной-сессии-admin)
+  - [59. Webhook провайдера](#59-webhook-провайдера)
+  - [Жизненный цикл платежа и статусы (проверено)](#жизненный-цикл-платежа-и-статусы-проверено)
 - [Nuxt Server API](#nuxt-server-api)
   - [Health check витрины](#10-health-check-витрины)
 - [Справочно: аутентификация администратора](#11-аутентификация-администратора-справочно)
@@ -1271,7 +1279,9 @@ curl -X POST "http://localhost:9000/store/carts/cart_01M8EJM9QSQ571G9WXJFP228R1/
 
 ### 37. Платежные коллекции и сессии
 
-Доступные провайдеры региона: `GET /store/payment-providers?region_id={region_id}` → `{"payment_providers":[{"id":"pp_system_default","is_enabled":true}]}` (провайдер доступен из коробки, без конфигурации).
+Доступные провайдеры региона: `GET /store/payment-providers?region_id={region_id}` — с этапа 6.2 seed связывает с регионом демонстрационные способы оплаты: `pp_cod_cash` (оплата при получении — все окружения) и `pp_demo_online` (тестовая фиктивная онлайн-оплата — только development/test; в production не регистрируется и блокируется guard-ом); служебный `pp_system_default` покупателю **не предлагается** (используется внутренними операциями ядра). Полный перечень зарегистрированных провайдеров — `GET /admin/payments/payment-providers` (маршрут 54).
+
+Выбор способа: при создании сессии укажите `provider_id` из списка региона; для `pp_demo_online` исход задается полем `data.outcome` (`success|decline|pending`, по умолчанию `success` — детали и webhook-подтверждение в [docs/payments.md](payments.md)). Выбор провайдера, не связанного с регионом, → 400 «Payment provider … is not enabled in the cart's region …» (в т.ч. `pp_system_default`); в production Store-маршрут дополнительно блокирует фиктивные провайдеры (400 `not_allowed`, guard этапа 6.2 — внутренние workflows и mark-as-paid не затрагиваются).
 
 Создание collection для корзины (явное; авто-создания при добавлении доставки нет — проверено):
 
@@ -1290,7 +1300,7 @@ curl -X POST "http://localhost:9000/store/payment-collections" \
   "payment_sessions": [ { "id": "payses_01M8EJNQ8HN1JC1MSCQJC048SR", "provider_id": "pp_system_default", "status": "pending", "amount": 9680 } ] } }
 ```
 
-Ограничения 2.23 (проверено): маршрутов `GET /store/payment-collections/{id}` и авторизации сессии (`…/payment-sessions/{id}/authorize`) в Store API **нет** (404); состояние collection читается через корзину (`GET /store/carts/{id}?fields=+payment_collection,*payment_collection.payment_sessions`); авторизация `pp_system_default` происходит неявно при завершении корзины. Обновление данных сессии: `POST /store/payment-collections/{id}/payment-sessions/{session_id}` — тело `{ "client_data": { … } }`.
+Ограничения 2.23 (проверено): маршрутов `GET /store/payment-collections/{id}` и авторизации сессии (`…/payment-sessions/{id}/authorize`) в Store API **нет** (404); состояние collection читается через корзину (`GET /store/carts/{id}?fields=+payment_collection,*payment_collection.payment_sessions`); авторизация `pp_system_default` происходит неявно при завершении корзины. Обновление данных сессии: `POST /store/payment-collections/{id}/payment-sessions/{session_id}` — тело `{ "client_data": { … } }` (произвольный клиентский record — провайдер не должен доверять его содержимому). Аудит 6.1 добавил: провайдер обязан быть связан с регионом (`Payment provider … is not enabled in the cart's region …` — 400), а замена сессии после авторизации/платежа запрещена («Payment session … can't be replaced because it has an authorized or captured payment» — 400). Жизненный цикл capture/refund/cancel/mark-as-paid/webhook — [раздел «Платежи: Admin API и webhook»](#платежи-admin-api-и-webhook-штатный-аудит-этапа-61).
 
 **Доступ (этап 5.3.1)**: ядро 2.23 не проверяет владельца на этих маршрутах — защита обеспечена middleware `payment-access.ts` на штатных маршрутах. Право на платежную коллекцию наследуется от права на её корзину (link `cart_payment_collection`, Query API): коллекция гостевой корзины (владелец `null`/`has_account:false`) работает по гостевой модели Medusa (id = секрет); коллекция авторизованной корзины — **только владелец**: посторонний покупатель и неавторизованный запрос получают контролируемый **404** (для создания — `Cart with id … not found`, для сессий — `Payment collection with id … was not found` — штатные форматы, без раскрытия суммы). Знание `payment_collection_id`/`payment_session_id` права не дает: сессии адресуются через id коллекции, а право определяется состоянием корзины. После claim коллекция наследует защиту владельца; конкурентный claim постоянного обхода не дает (stateless-проверка на каждом запросе). Admin API, внутренние workflows ядра (complete) и будущие webhook-маршруты провайдеров не затрагиваются.
 
@@ -1340,7 +1350,9 @@ curl "http://localhost:9000/store/orders/order_01M8…" \
 ```
 - любой отказ — контролируемый **404** `not_found` (`"Order with id: … was not found"`), неотличимый от несуществующего заказа: не раскрывает ни существование, ни персональные данные.
 
-Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","payment_status":"authorized","summary":{"paid_total":0,…}}}` — `payment_status` доступен прямо в Store API-ответе (`authorized` для `pp_system_default`; дополнительно подтверждено через Admin API). Перенос заказа покупателю — [маршрут 53](#53-перенос-гостевого-заказа-transfer). Возможные коды: 200; 404 (нет права/не существует).
+Ответ (200, сокращено): `{"order":{"id":"…","status":"pending","payment_status":"authorized","summary":{"paid_total":0,…}}}` — `payment_status` доступен прямо в Store API-ответе (`authorized` для `pp_system_default`; дополнительно подтверждено через Admin API). Возможные коды: 200; 404 (нет права/не существует).
+
+> **Уточнение аудита 6.1:** `payment_status` отсутствует в ответе `POST /store/carts/:id/complete` (маршрут 38) — статус платежа читается этим маршрутом. Возможные значения и их эволюция (authorized → partially_captured → captured → partially_refunded → refunded; canceled; awaiting) — [раздел «Платежи: Admin API и webhook»](#платежи-admin-api-и-webhook-штатный-аудит-этапа-61). Перенос заказа покупателю — [маршрут 53](#53-перенос-гостевого-заказа-transfer).
 
 ### Безопасность корзины и заказов (проверено)
 
@@ -1719,12 +1731,13 @@ curl -X POST 'http://localhost:9000/auth/user/emailpass' \
  6. POST /store/carts/:id/promotions {promo_codes:[...]}            → скидка (активные промоушены)
  7. GET  /store/shipping-options?cart_id=:id                       → доступные способы доставки
     POST /store/carts/:id/shipping-methods {option_id}              → выбранная доставка
- 8. GET  /store/payment-providers?region_id=:region                → pp_system_default
-    POST /store/payment-collections {cart_id}                       → collection (amount = total)
-    POST /store/payment-collections/:pc/payment-sessions
-         {provider_id:"pp_system_default"}                          → сессия (pending)
- 9. POST /store/carts/:id/complete                                  → {type:"order", order}
-    (авторизация pp_system_default происходит здесь)
+  8. GET  /store/payment-providers?region_id=:region                → pp_cod_cash, pp_demo_online
+     POST /store/payment-collections {cart_id}                       → collection (amount = total)
+     POST /store/payment-collections/:pc/payment-sessions
+          {provider_id:"pp_cod_cash"|"pp_demo_online",
+           data?:{outcome:"success"|"decline"|"pending"}}           → сессия (pending)
+  9. POST /store/carts/:id/complete                                  → {type:"order", order}
+     (авторизация техническая: COD всегда authorized; demo — по исходу)
 10. GET  /store/orders/:order_id                                   → подтверждение заказа
 ```
 
@@ -1752,8 +1765,8 @@ curl -X POST 'http://localhost:9000/auth/user/emailpass' \
 
 ## Что будет добавлено на следующих этапах
 
-- Этап 5 (завершение): 5.3 — интеграционные тесты авторизации и покупателей ✅ (28.11.2026, `store-auth-customers.spec.ts`, 14 тестов); 5.3.1 — серверная защита платежных коллекций и сессий ✅ (28.11.2026, middleware `payment-access.ts`, +5 тестов); 5.4 — приемка этапа.
-- Этап 6 (обновлен 28.11.2026, решение №40): демонстрационные способы оплаты на штатном Payment Module (тестовая онлайн-оплата, оплата при получении), тесты жизненного цикла платежа (успех/отказ/отмена/возврат), запрет фиктивной онлайн-оплаты в production, `docs/payments.md` — руководство по самостоятельному подключению реальных платежных сервисов (реальные интеграции исключены из V1); базовая доставка сохранена.
+- Этап 5 — завершен ✅ (5.1–5.4, включая 5.3.1 — серверную защиту платежных коллекций и сессий).
+- Этап 6: **6.1 — аудит Payment Module ✅** (28.11.2026; контракт `AbstractPaymentProvider`, жизненный цикл/статусы, Admin API и webhook — маршруты 54–59; решение №41 в [PROGRESS.md](PROGRESS.md) зафиксировано до реализации). **6.2 — демонстрационные провайдеры ✅** (28.11.2026: `pp_cod_cash` — оплата при получении; `pp_demo_online` — тестовая онлайн-оплата с исходами success/decline/pending и подписанным webhook-ом; production-защита — условная регистрация + `validateOptions` + guard `payment-access.ts`; seed синхронизирует способы региона; [docs/payments.md](payments.md) создан). Далее: 6.3 — базовая доставка, 6.4 — платежные уведомления, 6.5 — расширенные интеграционные тесты жизненного цикла, 6.6 — актуализация `docs/payments.md` и приемка. Реальные платежные интеграции исключены из V1.
 - Этапы 9–10: группы Commerce Client/composables и страницы витрины (каталог, корзина, checkout, авторизация, личный кабинет; страницы писем — `/reset-password`, `/account/order-transfer` — контракт ссылок в [docs/notifications.md](notifications.md)).
 
 Каждый новый модуль обязан сопровождаться разделом в этом файле.
@@ -1766,3 +1779,77 @@ curl -X POST 'http://localhost:9000/auth/user/emailpass' \
 - `GET /admin/notifications/{id}` — одно уведомление.
 
 Витрина этот API не использует; публикуется здесь для полноты контракта этапа 5.2.3.
+
+---
+
+## Платежи: Admin API и webhook (штатный, аудит этапа 6.1)
+
+Штатные маршруты управления платежами Medusa 2.23.0, проверенные живыми пробами 28.11.2026 (полный жизненный цикл `pp_system_default` на изолированных тестовых заказах). Витрина (Store API) этих маршрутов не использует: capture/refund/cancel — операции администратора; webhook — внешнего платежного сервиса. Собственных маршрутов проект не добавляет. Уведомления о платежах (6.4), демо-провайдеры (6.2) и `docs/payments.md` (6.6) — этап 6 в [ROADMAP.md](ROADMAP.md). Store-маршруты платежей — [маршрут 37](#37-платежные-коллекции-и-сессии).
+
+### 54. Платежи: список и чтение (Admin)
+
+- `GET /admin/payments` (Bearer JWT администратора) — список платежей; фильтры включают `payment_collection_id`; ответ `{payments, count, offset, limit}`.
+- `GET /admin/payments/payment-providers` — зарегистрированные провайдеры (с этапа 6.2): `{"payment_providers":[{"id":"pp_cod_cash","is_enabled":true},{"id":"pp_demo_online","is_enabled":true},{"id":"pp_system_default","is_enabled":true}],"count":3}` (`pp_demo_online` присутствует только вне production; `pp_system_default` — служебный, для покупателя не связывается с регионом).
+- `GET /admin/payments/{id}` — платеж (с `captures`, `refunds`). **Дефолтные поля не включают `canceled_at`** — при проверке отмены запрашивайте явно: `?fields=+canceled_at` (найдено живой пробой).
+
+### 55. Capture (Admin)
+
+`POST /admin/payments/{id}/capture` — тело `{ "amount": number }` (положительное; опциональное). Ответ — `{payment}` с обновленными `captures`. RBAC: `capture.create` + `order.update`; операция попадает в audit trail.
+
+Фактическое поведение (проверено):
+- **`amount` по умолчанию — вся сумма платежа, а не остаток**: после частичного capture запрос без `amount` завершается 400 `invalid_data` «You cannot capture more than the authorized amount substracted by what is already captured.» — передавайте остаток явно.
+- Частичный capture → заказ `payment_status: partially_captured`, `summary.paid_total` растет; полный (сумма остатка) → `captured`, `payment.captured_at` заполняется.
+- **Повторный capture после полного идемпотентен: 200 без новой записи** (no-op) — при любом `amount`.
+- Сверх авторизации (незавершенный capture) → 400 (сообщение выше); конкурентные capture сериализуются ядром (`SELECT … FOR UPDATE`).
+
+### 56. Refund, в том числе частичный (Admin)
+
+`POST /admin/payments/{id}/refund` — тело `{ "amount"?: number, "refund_reason_id"?: string, "note"?: string }`. Ответ — `{payment}` с `refunds`. RBAC: `refund.create` + `order.update`; audit trail.
+
+Фактическое поведение (проверено):
+- `amount` опционален; по умолчанию — вся сумма платежа; частичный refund → заказ `partially_refunded`; возврат остатка → `refunded`.
+- Сверх captured → 400: workflow — «You are not allowed to refund more than the captured amount»; модуль — «You cannot refund more than what is captured on the payment.» Повторный полный refund → 400 (двойной возврат невозможен).
+- **Идемпотентность повторных операций** (штатная): при передаче `idempotency_key` повторный запрос replay-ится (успешный — no-op), неудачный — resume, конкурентный незавершенный — 409; провайдер получает ключ идемпотентности. Refund-записи проходят статусы `pending → succeeded | failed` (неудачная сохраняется как soft-delete для безопасного retry).
+- Refund привязан к заказу через `order_payment_collection` (у платежа без заказа — 404).
+
+### 57. Отмена заказа и авто-отмена/возврат платежа (Admin)
+
+`POST /admin/orders/{id}/cancel` — отмена заказа штатным workflow. Фактически (проверено):
+- **uncaptured платежи отменяются автоматически** (`canceled_at`, читается `GET /admin/payments/{id}?fields=+canceled_at`), заказ получает `payment_status: canceled`;
+- **captured платежи автоматически возвращаются** (полный refund встроенным под-workflow);
+- резервирования инвентаря заказа удаляются ядром; заказ → `status: canceled`.
+Отдельного admin-маршрута отмены payment collection в 2.23 нет; `DELETE /admin/payment-collections/{id}` существует, но только для коллекций в статусе `not_paid` (иначе 400).
+
+### 58. Mark-as-paid и авторизация отложенной сессии (Admin)
+
+- `POST /admin/payment-collections/{id}/mark-as-paid` — тело `{ "order_id": string, "provider_id"?: string }` (`order_id` обязателен валидатором). Только для коллекций в статусе `not_paid` (иначе 400 «Can only mark 'not_paid' payment collection as paid»); создает сессию (по умолчанию служебный `pp_system_default`), авторизует и списывает всю сумму. **Upstream-особенность (проверено): `order_id` самим workflow не проверяется** — маршрут принял несуществующий `order_id`; используйте его только на коллекциях заказов. Для обычного заказа коллекция после complete имеет статус `authorized`/`awaiting` → mark-as-paid неприменим; подтверждение получения денег администратором — штатный capture (маршрут 55).
+- `POST /admin/orders/{id}/payment-sessions/authorize` — тело `{ "payment_session_id": string }`: повторный вызов провайдера для сессии в `pending_authorization` (отложенная/асинхронная оплата); при успехе создает платеж (и capture, если провайдер подтвердил списание); ответ `{order, is_authorized}`. В Medusa Admin отображается кнопкой «Check status» для таких сессий. Для `pp_system_default` неактуален (всегда авторизуется при complete).
+
+### 59. Webhook провайдера
+
+`POST /hooks/payment/{provider}` — штатный маршрут приема webhook-ов платежных провайдеров (без авторизации по дизайну; publishable key не нужен).
+
+Фактическое поведение (проверено + исходники):
+- Провайдер должен быть зарегистрирован и включен: `pp_unknown` → 400 «Webhook Error: Payment provider pp_unknown is not configured»; для `pp_system_default` маршрут принимает что угодно (200) — провайдер возвращает `not_supported`, событие игнорируется.
+- Тело сохраняется как raw body; ядро эмитит событие `payment.webhook_received` через Event Bus с **задержкой 5 с и 3 попытками** (опции модуля `webhook_delay`/`webhook_retries`).
+- Штатный подписчик вызывает `provider.getWebhookActionAndData(payload)`; **события без `session_id` игнорируются** (защита от чужих событий), как и промежуточные действия (`pending`, `failed`, `canceled`, `requires_more`, `not_supported`); действия `authorized|captured` запускают штатный `processPaymentWorkflow`: автозавершение корзины → заказ, автокапчур, дооформление отложенной авторизации. Повторная доставка безопасна (идемпотентность authorize/capture).
+- **Проверка подписи — ответственность провайдера** (`getWebhookActionAndData` получает `rawData` и `headers`); суммы — серверные (capture из webhook ограничен авторизованной суммой).
+- **Демо-провайдер онлайн-оплаты (этап 6.2)**: `POST /hooks/payment/pp_demo_online` — тело `{"event_type":"authorized"|"captured","session_id":"payses_…","amount":<основные единицы>}`, подпись HMAC-SHA256 (hex) над raw body в заголовке `x-demo-signature` (секрет `PAYMENT_DEMO_WEBHOOK_SECRET` — только backend). Неверная подпись/формат → событие игнорируется без изменения состояния; `pending`-сессия подтверждается webhook-ом (заказ `awaiting` → `authorized` → `captured`), повторная доставка идемпотентна. Пример вызова и гарантии — [docs/payments.md](payments.md).
+
+### Жизненный цикл платежа и статусы (проверено)
+
+```text
+payment collection: not_paid → awaiting → (partially_)authorized → partially_captured → completed
+                    | canceled | failed        (пересчитывается ядром по сессиям/captures/refunds)
+session:           pending → authorized | pending_authorization | requires_more | error | canceled
+payment:          создается при authorize (сумма — серверная сумма сессии); captures[]/refunds[];
+                  captured_at (полный capture); canceled_at (отмена; в дефолтных полях Admin API его нет)
+order.payment_status (агрегируется при чтении из коллекций):
+                    authorized → partially_captured → captured → partially_refunded → refunded
+                    | canceled (отмена заказа) | awaiting (отложенная авторизация) | not_paid
+```
+
+- `payment_status` **отсутствует в Store-ответе complete** — читается `GET /store/orders/:id` (с proof `x-cart-id` для гостя, маршрут 39).
+- Событие workflow `payment.captured` / `payment.refunded` — payload `{id}` (id платежа), по исходникам 2.23; фактическая эмиссия живой шины проверяется в 6.4/6.5.
+- Гонка «два заказа с одной корзины» закрыта middleware 4.5; авторизация платежа — последний шаг `completeCartWorkflow` (компенсация отменяет платеж при провале дальнейших шагов).
+- `pp_system_default` (системный провайдер): всегда `authorized` (отказа/ожидания не бывает), capture/refund/cancel — no-op, webhook — `not_supported`; служебный механизм mark-as-paid и временный провайдер checkout до 6.2.

@@ -22,6 +22,7 @@ import {
 } from "./middlewares/order-access"
 import {
   guardPaymentCollectionCreate,
+  guardPaymentProviderPolicy,
   guardPaymentSessionsAccess,
 } from "./middlewares/payment-access"
 import {
@@ -144,7 +145,10 @@ export default defineMiddlewares({
     {
       methods: ["POST"],
       matcher: "/store/payment-collections/:id/payment-sessions",
-      middlewares: [guardPaymentSessionsAccess],
+      // Этап 6.2: первой проверяется политика выбора провайдера
+      // (production-запрет фиктивных способов — решение №41), затем
+      // доступ владельца (5.3.1).
+      middlewares: [guardPaymentProviderPolicy, guardPaymentSessionsAccess],
     },
     {
       methods: ["POST"],

@@ -192,7 +192,7 @@ async function prepareCheckout(cartId: string, email: string, bearer?: string): 
   })
   await storeFetch(
     `/store/payment-collections/${pc.body?.payment_collection.id}/payment-sessions`,
-    { method: "POST", body: { provider_id: "pp_system_default" }, bearer: bearer ?? null }
+    { method: "POST", body: { provider_id: "pp_demo_online" }, bearer: bearer ?? null }
   )
 }
 
@@ -645,7 +645,7 @@ describe("5.2.1: защита корзин и заказов (Store API)", () =>
       }
     }>(`/store/payment-collections/${paymentCollectionId}/payment-sessions`, {
       method: "POST",
-      body: { provider_id: "pp_system_default" },
+      body: { provider_id: "pp_demo_online" },
       bearer: bearer ?? null,
     })
   }

@@ -101,6 +101,16 @@
 | `MAILPIT_ENABLED` | `true` | да | вручную | — | Запуск Mailpit в локальном окружении (make init/up/dev; compose profile). **`false` в production** (валидатор запрещает `true` при `NODE_ENV=production`). |
 | `MAILPIT_UI_PORT` | `8025` | нет | вручную | — | Порт Web UI Mailpit на хосте (только `127.0.0.1`). |
 
+## Платежи (этап 6.2)
+
+Демонстрационные способы оплаты — штатный Payment Module Medusa с провайдерами по контракту `AbstractPaymentProvider` (решение №41 в [docs/PROGRESS.md](PROGRESS.md)): `pp_cod_cash` (оплата при получении — доступен во всех окружениях) и `pp_demo_online` (тестовая фиктивная онлайн-оплата — только development/test). Полная архитектура, статусы, тестовые сценарии и подключение собственных провайдеров — [docs/payments.md](payments.md).
+
+| Переменная | Значение по умолчанию | Обязательна | Заполнение | Доступ | Назначение |
+|---|---|---|---|---|---|
+| `PAYMENT_DEMO_WEBHOOK_SECRET` | — | да (вне production) | [auto] | private | Секрет HMAC webhook-а демо-провайдера онлайн-оплаты (`POST /hooks/payment/pp_demo_online`, заголовок `x-demo-signature`). Генерируется `make init` (hex, 32 символа; минимум 16); передается только backend-контейнерам и тест-раннеру. В production не используется: провайдер там не регистрируется (условная регистрация в `medusa-config.ts` + `validateOptions`), а выбор фиктивных провайдеров блокирует серверный guard `payment-access.ts`. |
+
+Production: доступный покупателю способ — только `pp_cod_cash` (и реальные провайдеры, подключенные разработчиком); `pp_system_default` — служебный (mark-as-paid) и с регионом не связывается.
+
 ## Nuxt (storefront)
 
 | Переменная | Значение по умолчанию | Обязательна | Заполнение | Доступ | Назначение |

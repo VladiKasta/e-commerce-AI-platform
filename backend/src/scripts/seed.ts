@@ -22,6 +22,7 @@ import {
   createTaxRegionsWorkflow,
   linkSalesChannelsToApiKeyWorkflow,
   linkSalesChannelsToStockLocationWorkflow,
+  updateRegionsWorkflow,
   updateStoresWorkflow,
 } from "@medusajs/medusa/core-flows"
 import { readEnvFile, upsertEnvValue } from "./lib/update-env-file"
@@ -32,7 +33,9 @@ import { readEnvFile, upsertEnvValue } from "./lib/update-env-file"
  * Создает (только если еще не созданы):
  *  - магазин с валютой из STORE_CURRENCY и названием из STORE_NAME;
  *  - канал продаж и связанный с ним publishable API key;
- *  - регион России с тестовым платежным провайдером `pp_system_default`;
+ *  - регион России со способами оплаты этапа 6.2 (pp_cod_cash всегда,
+ *    pp_demo_online вне production; служебный pp_system_default
+ *    покупателю не предлагается);
  *  - налоговый регион;
  *  - склад, fulfillment set, зону доставки и тестовые способы доставки;
  *  - при SEED_DEMO_DATA=true — категории, демо-товары и остатки.
@@ -52,6 +55,43 @@ const SERVICE_ZONE_NAME = "Россия"
 const API_KEY_TITLE = "Storefront"
 
 const COUNTRY = "ru"
+
+/**
+ * Способы оплаты, доступные покупателю в регионе (этап 6.2, решение №41):
+ * оплата при получении — во всех окружениях; тестовая онлайн-оплата —
+ * только вне production (провайдер там и не регистрируется — связывание
+ * отражало бы фиктивный способ). Служебный pp_system_default в список
+ * не входит: он используется внутренними операциями Medusa (mark-as-paid).
+ */
+const DEMO_PAYMENT_PROVIDERS = ["pp_cod_cash", "pp_demo_online"]
+const MANAGED_PAYMENT_PROVIDERS = [
+  "pp_system_default",
+  ...DEMO_PAYMENT_PROVIDERS,
+]
+
+function desiredPaymentProviders(): string[] {
+  return process.env.NODE_ENV === "production"
+    ? ["pp_cod_cash"]
+    : [...DEMO_PAYMENT_PROVIDERS]
+}
+
+/**
+ * Целевой набор способов оплаты региона: демо-способы по окружению +
+ * сторонние провайдеры, подключенные разработчиком (не удаляются при
+ * повторном seed). Из управляемых провайдеров сохраняется только
+ * pp_cod_cash (и pp_demo_online вне production); pp_system_default
+ * снимается — он не должен предлагаться покупателю.
+ */
+function targetRegionPaymentProviders(current: string[]): string[] {
+  const keep = current.filter(
+    (id) =>
+      !MANAGED_PAYMENT_PROVIDERS.includes(id) ||
+      (id === "pp_cod_cash" ||
+        (id === "pp_demo_online" && process.env.NODE_ENV !== "production"))
+  )
+  return [...new Set([...keep, ...desiredPaymentProviders()])]
+}
+
 
 // ВАЖНО: Medusa хранит цены в основных денежных единицах (не в копейках):
 // значение 1490 — это 1490 ₽.
@@ -584,12 +624,39 @@ export default async function seedStore({ container }: ExecArgs) {
             name: REGION_NAME,
             currency_code: currency,
             countries: [COUNTRY],
-            payment_providers: ["pp_system_default"],
+            payment_providers: desiredPaymentProviders(),
           },
         ],
       },
     })
     region = result[0]
+  } else {
+    // Идемпотентная синхронизация способов оплаты региона (этап 6.2,
+    // решение №41): добавляем недостающие демо-способы, снимаем
+    // pp_system_default (служебный провайдер mark-as-paid, не способ
+    // выбора покупателя) и pp_demo_online в production. Сторонние
+    // провайдеры, подключенные разработчиком (реальные платежные
+    // сервисы после V1), НЕ удаляются — сохраняются в списке.
+    const { data: providerLinks } = await query.graph({
+      entity: "region_payment_provider",
+      fields: ["payment_provider.id"],
+      filters: { region_id: region.id },
+    })
+    const current = providerLinks
+      .map((l) => (l as { payment_provider?: { id?: string } }).payment_provider?.id)
+      .filter((id): id is string => typeof id === "string")
+    const target = targetRegionPaymentProviders(current)
+    if ([...current].sort().join("|") !== [...target].sort().join("|")) {
+      logger.info(
+        `Syncing region payment providers: [${current.join(", ")}] -> [${target.join(", ")}]`
+      )
+      await updateRegionsWorkflow(container).run({
+        input: {
+          selector: { id: region.id },
+          update: { payment_providers: target },
+        },
+      })
+    }
   }
 
   logger.info("Seeding tax region...")

@@ -272,6 +272,23 @@ if (seedDemoData && !["true", "false"].includes(seedDemoData)) {
   errors.push(`SEED_DEMO_DATA должен быть true или false, получено: "${seedDemoData}"`)
 }
 
+// ── Платежи (этап 6.2) ────────────────────────────────────────────────
+// Демо-провайдер фиктивной онлайн-оплаты регистрируется только вне
+// production (решение №41): там ему нужен секрет HMAC webhook-а.
+// В production переменная не используется (провайдер не регистрируется и
+// блокируется guard-ом); оплата при получении (pp_cod_cash) настраек
+// не требует.
+const isProductionEnv = String(config.NODE_ENV ?? "").toLowerCase() === "production"
+const demoWebhookSecret = config.PAYMENT_DEMO_WEBHOOK_SECRET?.trim() ?? ""
+if (!isProductionEnv && demoWebhookSecret === "") {
+  errors.push(
+    "PAYMENT_DEMO_WEBHOOK_SECRET — обязательная переменная вне production (секрет HMAC webhook-а демо-провайдера онлайн-оплаты; генерируется make init)"
+  )
+}
+if (demoWebhookSecret !== "" && demoWebhookSecret.length < 16) {
+  errors.push("PAYMENT_DEMO_WEBHOOK_SECRET должен содержать минимум 16 символов")
+}
+
 if (publishableKey === "") {
   warnings.push(
     "MEDUSA_PUBLISHABLE_KEY пуст — он будет создан seed-скриптом при инициализации"

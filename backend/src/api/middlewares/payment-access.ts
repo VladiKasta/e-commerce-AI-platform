@@ -12,7 +12,6 @@ import { cartNotFound, loadCartAccess } from "./cart-access"
 
 /** См. примечание в cart-access.ts: auth_context опционален. */
 type AccessRequest = MedusaRequest & { auth_context?: AuthContext }
-
 /**
  * Защита платежных коллекций и сессий (этап 5.3.1).
  *
@@ -158,4 +157,77 @@ export async function guardPaymentSessionsAccess(
     return
   }
   next(paymentCollectionNotFound(collectionId))
+}
+
+/**
+ * Production-защита выбора провайдера (этап 6.2, решение №41).
+ *
+ * Штатная конфигурация не гарантирует запрет фиктивной онлайн-оплаты:
+ * `pp_system_default` регистрируется лоадером Payment Module всегда
+ * (нужно служебному mark-as-paid), а его связь с регионом — данные,
+ * которые администратор может восстановить вручную через Admin API
+ * (`payment_providers` в update region; проверено живой пробой этапа
+ * 6.2). После ручной привязки Store API честно предложил бы фиктивную
+ * онлайн-оплату и принял бы её сессию.
+ *
+ * Guard — минимальный middleware на штатном маршруте СОЗДАНИЯ сессии
+ * (в том же файле и цепочке, что защита 5.3.1): в production отвергает
+ * выбор фиктивных провайдеров покупателем. Не затрагивает:
+ * - `pp_cod_cash` (оплата при получении — легитимный production-способ);
+ * - реальные провайдеры, подключенные разработчиком после V1 (не входят
+ *   в блок-лист);
+ * - внутренние workflows ядра и служебный mark-as-paid (Admin API и
+ *   workflow-вызовы createPaymentSessionsWorkflow идут в обход Store
+ *   маршрута — техническая авторизация mark-as-paid продолжает работать);
+ * - dev/test окружения (демо-провайдеры там доступны по назначению).
+ *
+ * В dev/test выбор блок-листа отсюда не запрещен: pp_system_default и
+ * незарегистрированные провайдеры отсекает штатная проверка связи с
+ * регионом (400 «not enabled in the cart's region» — seed связывает
+ * только pp_cod_cash/pp_demo_online).
+ */
+const PRODUCTION_BLOCKED_PAYMENT_PROVIDERS = new Set([
+  "pp_system_default",
+  "pp_demo_online",
+])
+
+/** Проверка политики выбора провайдера (чистая функция — unit-тестируется). */
+export function assertProviderSelectionAllowed(
+  isProduction: boolean,
+  providerId: string
+): void {
+  if (
+    isProduction &&
+    PRODUCTION_BLOCKED_PAYMENT_PROVIDERS.has(providerId)
+  ) {
+    throw new MedusaError(
+      MedusaError.Types.NOT_ALLOWED,
+      `Payment provider ${providerId} is not available as a customer payment method in this environment.`
+    )
+  }
+}
+
+/**
+ * `POST /store/payment-collections/:id/payment-sessions` — политика выбора
+ * провайдера в production (до проверки доступа: ответ одинаков для любого
+ * id коллекции и ничего не раскрывает о её существовании).
+ */
+export function guardPaymentProviderPolicy(
+  req: AccessRequest,
+  _res: MedusaResponse,
+  next: MedusaNextFunction
+): void {
+  const body = req.body as { provider_id?: unknown } | undefined
+  if (typeof body?.provider_id === "string" && body.provider_id.length > 0) {
+    try {
+      assertProviderSelectionAllowed(
+        process.env.NODE_ENV === "production",
+        body.provider_id
+      )
+    } catch (error) {
+      next(error)
+      return
+    }
+  }
+  next()
 }

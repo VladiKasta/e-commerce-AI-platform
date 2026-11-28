@@ -42,10 +42,11 @@
     DELETE /store/carts/:id/line-items/:line_id                → удаление позиции
  5. POST /store/carts/:id/promotions {promo_codes:[…]}         → скидка (активные промоушены)
  6. GET  /store/shipping-options?cart_id=:id                   → доступные способы доставки
-    POST /store/carts/:id/shipping-methods {option_id}         → выбранная доставка
+     POST /store/carts/:id/shipping-methods {option_id}         → выбранная доставка
  7. POST /store/payment-collections {cart_id}                  → collection (amount = total корзины)
-    POST /store/payment-collections/:pc/payment-sessions
-         {provider_id:"pp_system_default"}                    → сессия (pending)
+     POST /store/payment-collections/:pc/payment-sessions
+          {provider_id:"pp_cod_cash"|"pp_demo_online",
+           data?:{outcome:"success"|"decline"|"pending"}}      → сессия (pending)
  8. POST /store/carts/:id/complete {}                          → {type:"order", order}
  9. GET  /store/orders/:order_id                              → подтверждение заказа (payment_status)
 ```
@@ -98,14 +99,14 @@ curl -X POST "http://localhost:9000/store/carts/cart_01M8…" \
 { "cart": { "shipping_total": 500, "item_subtotal": 1170, "subtotal": 1670, "total": 1670 } }
 ```
 
-**Платеж** (провайдер `pp_system_default` доступен из коробки; `GET /store/payment-providers?region_id=…` подтверждает):
+**Платеж** (с этапа 6.2 регион предлагает два демонстрационных способа — `pp_cod_cash` (оплата при получении) и `pp_demo_online` (тестовая фиктивная онлайн-оплата, вне production); `GET /store/payment-providers?region_id=…` подтверждает; служебный `pp_system_default` покупателю не предлагается — [docs/payments.md](payments.md)):
 
 ```json
 { "payment_collection": { "id": "pay_col_01M8ENDGMSWG9R2YM60QCCVSQV", "amount": 1670, "currency_code": "rub" } }
 ```
 
 ```json
-{ "payment_collection": { "payment_sessions": [ { "provider_id": "pp_system_default",
+{ "payment_collection": { "payment_sessions": [ { "provider_id": "pp_cod_cash",
   "status": "pending", "amount": 1670 } ] } }
 ```
 
@@ -138,7 +139,7 @@ curl -X POST "http://localhost:9000/store/carts/cart_01M8…" \
 | `variant_id`, `quantity` | добавление позиции | да | `quantity ≥ 1`; цена передавать нельзя |
 | `option_id` | выбор доставки | да | из `GET /store/shipping-options?cart_id=` |
 | `cart_id` | payment collection | да | создается после финального состава корзины |
-| `provider_id` | payment session | да | `pp_system_default` (системный провайдер) |
+| `provider_id` | payment session | да | из `GET /store/payment-providers?region_id=`: `pp_cod_cash` или `pp_demo_online` (вне production) |
 
 ## Серверный расчет стоимости
 
@@ -212,7 +213,7 @@ curl -X POST "http://localhost:9000/store/carts/cart_01M8…" \
   - **авторизованная корзина** (владелец зарегистрирован) — **только владелец**: посторонний покупатель и неавторизованный запрос получают 404 на чтение/изменение/complete/claim (контролируемый отказ, неотличимый от несуществующей корзины);
   - **claim** (`POST /store/carts/:id/customer`) — привязать можно гостевую или свою корзину; присвоение чужой — 404; проверка выполняется под той же блокировкой, что и complete (конкурентные claim/claim и claim/complete сериализуются, повторный claim своей корзины идемпотентен);
   - **гостевой заказ** — голый order_id больше не авторизация: `GET /store/orders/:id` требует подтвержденного права (см. следующий раздел).
-- `payment_status` заказа доступен прямо в Store API (`"authorized"` для `pp_system_default` — авторизация происходит неявно при complete; отдельного store-маршрута авторизации сессии в 2.23 нет).
+- `payment_status` заказа доступен прямо в Store API (`"authorized"` для COD и demo-success — техническая авторизация при complete, НЕ оплачено; `payment_status` отсутствует в ответе complete, читается `GET /store/orders/:id` — аудит 6.1). Для `pp_demo_online` исход `decline` завершает complete ошибкой 400 (заказ не создается), `pending` создает заказ со `payment_status: "awaiting"` (подтверждение — подписанный webhook, [docs/payments.md](payments.md)). Отдельного store-маршрута авторизации сессии в 2.23 нет.
 
 ## Доступ к гостевому заказу (5.2.1)
 

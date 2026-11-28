@@ -104,4 +104,4 @@ typecheck: ## Проверка типов backend (tsc) и storefront (vue-tsc)
 
 test: ## Автотесты storefront: unit + интеграционные на живой Medusa
 	@test -n "$(MAILPIT)" && docker compose up -d --wait mailpit >/dev/null 2>&1 || true
-	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD -e MEILISEARCH_HOST -e MEILISEARCH_MASTER_KEY -e MAILPIT_HOST=$${MAILPIT_HOST:-http://mailpit:8025} storefront pnpm test
+	@docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD -e MEILISEARCH_HOST -e MEILISEARCH_MASTER_KEY -e MAILPIT_HOST=$${MAILPIT_HOST:-http://mailpit:8025} -e PAYMENT_DEMO_WEBHOOK_SECRET storefront pnpm test

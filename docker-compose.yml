@@ -52,6 +52,10 @@ x-medusa-env: &medusa-env
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
   SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
   SMTP_FROM_NAME: ${SMTP_FROM_NAME:-}
+  # Платежи (этап 6.2): секрет HMAC webhook-а демо-провайдера онлайн-оплаты
+  # (только backend; в production провайдер не регистрируется — переменная
+  # не используется). См. docs/payments.md.
+  PAYMENT_DEMO_WEBHOOK_SECRET: ${PAYMENT_DEMO_WEBHOOK_SECRET:-}
   # Расписание job-а повторной доставки неудачных писем (cron; пусто —
   # раз в 5 минут), окно повторов — минуты (по умолчанию 15 ≈ TTL
   # reset-токена). См. docs/notifications.md.

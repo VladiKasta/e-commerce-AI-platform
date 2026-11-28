@@ -692,17 +692,21 @@ describe("Доставка и платежи", () => {
   )
 
   it(
-    "payment collection и payment session через pp_system_default",
+    "payment collection и payment session через pp_demo_online",
     async () => {
-      // Провайдер региона доступен из коробки
+      // Способы оплаты региона: демо-провайдеры этапа 6.2, системный
+      // pp_system_default покупателю не предлагается (seed его не связывает)
       const providers = await storeFetch<{
         payment_providers: Array<{ id: string; is_enabled: boolean }>
       }>(`/store/payment-providers?region_id=${regionId}`)
       expect(providers.status).toBe(200)
-      const systemDefault = providers.body!.payment_providers.find(
-        (provider) => provider.id === "pp_system_default"
+      const demoProvider = providers.body!.payment_providers.find(
+        (provider) => provider.id === "pp_demo_online"
       )
-      expect(systemDefault?.is_enabled).toBe(true)
+      expect(demoProvider?.is_enabled).toBe(true)
+      expect(
+        providers.body!.payment_providers.some((p) => p.id === "pp_system_default")
+      ).toBe(false)
 
       // Payment collection: сумма равна total корзины
       const collection = await storeFetch<{
@@ -717,16 +721,16 @@ describe("Доставка и платежи", () => {
       expect(pc.amount).toBe(cartTotal)
       expect(pc.currency_code).toBe("rub")
 
-      // Payment session системного провайдера — pending
+      // Payment session демо-провайдера — pending
       const session = await storeFetch<{
         payment_collection: PaymentCollection
       }>(`/store/payment-collections/${pc.id}/payment-sessions`, {
         method: "POST",
-        body: { provider_id: "pp_system_default" },
+        body: { provider_id: "pp_demo_online" },
       })
       expect(session.status).toBe(200)
       const created = session.body!.payment_collection.payment_sessions![0]!
-      expect(created.provider_id).toBe("pp_system_default")
+      expect(created.provider_id).toBe("pp_demo_online")
       expect(created.status).toBe("pending")
       expect(created.amount).toBe(cartTotal)
     },
@@ -793,7 +797,7 @@ describe("Полный гостевой checkout: complete → заказ", () =
       expect(order.id).toBe(orderId)
       expect(order.display_id).toBe(orderDisplayId)
       expect(order.status).toBe("pending")
-      // pp_system_default авторизуется неявно при complete
+      // pp_demo_online авторизуется неявно при complete
       expect(order.payment_status).toBe("authorized")
       expect(order.total).toBe(variantUnitPrice * 3 + 500)
       expect(order.email).toBe(EMAIL)
@@ -1157,7 +1161,7 @@ describe("Негативные проверки безопасности и ва
       expect(pc.status).toBe(200)
       const session = await storeFetch<CartResponse>(
         `/store/payment-collections/${pc.body!.payment_collection.id}/payment-sessions`,
-        { method: "POST", body: { provider_id: "pp_system_default" } }
+        { method: "POST", body: { provider_id: "pp_demo_online" } }
       )
       expect(session.status).toBe(200)
 
@@ -1197,7 +1201,7 @@ async function selectStandardShipping(cart: string): Promise<void> {
 
 /**
  * Корзина, готовая к complete: позиция + доставка + payment collection
- * с сессией pp_system_default. Для конкурентных сценариев этапа 4.5.
+ * с сессией pp_demo_online. Для конкурентных сценариев этапа 4.5.
  */
 async function prepareCompletableCart(): Promise<string> {
   const cart = await createCart()
@@ -1224,7 +1228,7 @@ async function prepareCompletableCart(): Promise<string> {
 
   const session = await storeFetch<CartResponse>(
     `/store/payment-collections/${collection.body!.payment_collection.id}/payment-sessions`,
-    { method: "POST", body: { provider_id: "pp_system_default" } }
+    { method: "POST", body: { provider_id: "pp_demo_online" } }
   )
   if (session.status !== 200) {
     throw new Error(`Не удалось создать payment session: HTTP ${session.status}`)

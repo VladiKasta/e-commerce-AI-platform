@@ -34,8 +34,13 @@ env_value() {
 }
 
 set_env_value() {
-  # Перезаписывает пустое значение существующей переменной.
+  # Перезаписывает пустое значение существующей переменной; отсутствующая
+  # переменная добавляется в конец файла (awk ниже не добавляет строки сам).
   local key="$1" value="$2" tmp
+  if ! grep -qE "^$1=" "$ENV_FILE"; then
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    return
+  fi
   tmp=$(mktemp)
   awk -v k="$key" -v v="$value" '
     index($0, k "=") == 1 { print k "=" v; next }
@@ -59,5 +64,6 @@ ensure_secret JWT_SECRET 32
 ensure_secret COOKIE_SECRET 32
 ensure_secret ADMIN_PASSWORD 8
 ensure_secret MEILISEARCH_MASTER_KEY 16
+ensure_secret PAYMENT_DEMO_WEBHOOK_SECRET 32
 
 echo "Секреты готовы."

@@ -723,7 +723,7 @@ describe("5.3: авторизация, профиль покупателя и з
     )
     await storeFetch(
       `/store/payment-collections/${pc.body?.payment_collection.id}/payment-sessions`,
-      { method: "POST", body: { provider_id: "pp_system_default" } }
+      { method: "POST", body: { provider_id: "pp_demo_online" } }
     )
     const done = await storeFetch<{ order: { id: string } }>(
       `/store/carts/${cartId}/complete`,
